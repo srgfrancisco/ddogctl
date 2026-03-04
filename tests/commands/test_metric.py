@@ -7,6 +7,23 @@ from click.testing import CliRunner
 from ddogctl.commands.metric import metric
 
 
+class MockPoint:
+    """Mock SDK Point object — wraps [timestamp, value] in a .value attribute."""
+
+    def __init__(self, timestamp, value):
+        self._data = [timestamp, value]
+
+    @property
+    def value(self):
+        return self._data
+
+    def __iter__(self):
+        raise TypeError("MockPoint does not support iteration (like the real SDK Point)")
+
+    def __getitem__(self, key):
+        raise TypeError("MockPoint does not support subscript access")
+
+
 class MockMetricQueryResponse:
     """Mock Datadog metric query response."""
 
@@ -89,8 +106,8 @@ def test_metric_query_csv_format(mock_client, runner):
             {
                 "metric": "database.connections",
                 "pointlist": [
-                    [1609459200000, 150.0],
-                    [1609459260000, 155.0],
+                    MockPoint(1609459200000, 150.0),
+                    MockPoint(1609459260000, 155.0),
                 ],
             }
         ]
@@ -119,7 +136,7 @@ def test_metric_query_table_format(mock_client, runner):
         series=[
             {
                 "metric": "trace.web.request",
-                "pointlist": [[1609459200000, 123.45]],
+                "pointlist": [MockPoint(1609459200000, 123.45)],
             }
         ]
     )
@@ -359,7 +376,7 @@ def test_metric_query_multiple_series(mock_client, runner):
 def test_metric_query_table_format_truncates_points(mock_client, runner):
     """Test that table format shows only last 20 points."""
     # Create 30 data points
-    pointlist = [[1609459200000 + (i * 60000), 50.0 + i] for i in range(30)]
+    pointlist = [MockPoint(1609459200000 + (i * 60000), 50.0 + i) for i in range(30)]
 
     mock_response = MockMetricQueryResponse(
         series=[

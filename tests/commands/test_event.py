@@ -164,7 +164,7 @@ def test_event_list_with_filters(mock_client, runner):
             event,
             [
                 "list",
-                "--since",
+                "--from",
                 "1h",
                 "--sources",
                 "alert,deploy",
@@ -197,12 +197,12 @@ def test_event_list_with_custom_time_range(mock_client, runner):
         with patch("ddogctl.commands.event.parse_time_range") as mock_parse_time:
             mock_parse_time.return_value = (1609459200, 1609545600)
 
-            result = runner.invoke(event, ["list", "--since", "7d"])
+            result = runner.invoke(event, ["list", "--from", "7d", "--to", "1d"])
 
             assert result.exit_code == 0, f"Command failed: {result.output}"
 
-            # Verify parse_time_range was called
-            mock_parse_time.assert_called_once_with("7d", "now")
+            # Verify parse_time_range was called with both args
+            mock_parse_time.assert_called_once_with("7d", "1d")
 
             # Verify list_events was called with parsed timestamps
             call_kwargs = mock_client.events.list_events.call_args.kwargs

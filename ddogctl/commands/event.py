@@ -18,7 +18,8 @@ def event():
 
 
 @event.command(name="list")
-@click.option("--since", default="24h", help="Time range (e.g., 1h, 24h, 7d)")
+@click.option("--from", "from_time", default="24h", help="Start time (e.g., 1h, 24h, 7d)")
+@click.option("--to", "to_time", default="now", help="End time")
 @click.option("--sources", help="Event sources (comma-separated, e.g., alert,deploy)")
 @click.option("--priority", type=click.Choice(["normal", "low"]), help="Event priority")
 @click.option("--tags", help="Filter by tags (comma-separated)")
@@ -26,11 +27,11 @@ def event():
     "--format", type=click.Choice(["json", "table"]), default="table", help="Output format"
 )
 @handle_api_error
-def list_events(since, sources, priority, tags, format):
+def list_events(from_time, to_time, sources, priority, tags, format):
     """List events."""
     client = get_datadog_client()
 
-    from_ts, to_ts = parse_time_range(since, "now")
+    from_ts, to_ts = parse_time_range(from_time, to_time)
 
     with console.status("[cyan]Fetching events...[/cyan]"):
         # Build kwargs only with provided parameters
@@ -49,7 +50,7 @@ def list_events(since, sources, priority, tags, format):
         return
 
     if format == "table":
-        table = Table(title=f"Events (last {since})", show_lines=False)
+        table = Table(title=f"Events (last {from_time})", show_lines=False)
         table.add_column("Time", style="cyan", width=20)
         table.add_column("Title", style="white", min_width=30)
         table.add_column("Source", style="dim", width=15)

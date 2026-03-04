@@ -43,7 +43,7 @@ def query_metric(query, from_time, to_time, format):
             for series in result.series:
                 metric_name = series.get("metric", "unknown")
                 for point in series.get("pointlist", []):
-                    timestamp, value = point
+                    timestamp, value = point.value
                     print(f"{timestamp},{metric_name},{value}")
     else:
         # Table format
@@ -59,7 +59,7 @@ def query_metric(query, from_time, to_time, format):
             # Show last 20 points
             points = series.get("pointlist", [])[-20:]
             for point in points:
-                timestamp, value = point
+                timestamp, value = point.value
                 from datetime import datetime
 
                 dt = datetime.fromtimestamp(timestamp / 1000)

@@ -29,6 +29,58 @@ from datadog_api_client.v2.api import (
 from ddogctl.config import DatadogConfig
 
 
+class _Namespace:
+    """Simple namespace for attribute access on API response data."""
+
+    def __init__(self, data):
+        for key, value in data.items():
+            setattr(self, key, value)
+
+
+class _Response:
+    """Minimal response wrapper with a .data attribute."""
+
+    def __init__(self, data):
+        self.data = data
+
+
+class DBMClient:
+    """Lightweight wrapper for DBM API endpoints using direct HTTP calls."""
+
+    def __init__(self, api_client):
+        self._api_client = api_client
+
+    def _call(self, method, path, **query_params):
+        """Make a direct REST call through the SDK's ApiClient."""
+        params = {k: v for k, v in query_params.items() if v is not None}
+        response = self._api_client.call_api(
+            method, path, query_params=params, header_params={"Accept": "application/json"}
+        )
+        import json
+
+        body = json.loads(response.response.data) if response.response.data else {}
+        data_raw = body.get("data", [])
+        if isinstance(data_raw, list):
+            return _Response(
+                [_Namespace(item) if isinstance(item, dict) else item for item in data_raw]
+            )
+        elif isinstance(data_raw, dict):
+            return _Response(_Namespace(data_raw))
+        return _Response(data_raw)
+
+    def list_hosts(self, **kwargs):
+        return self._call("GET", "/api/v2/dbm/hosts", **kwargs)
+
+    def list_queries(self, **kwargs):
+        return self._call("GET", "/api/v2/dbm/activity", **kwargs)
+
+    def get_query_plan(self, query_id, **kwargs):
+        return self._call("GET", f"/api/v2/dbm/query/{query_id}/plan", **kwargs)
+
+    def list_query_samples(self, query_id, **kwargs):
+        return self._call("GET", f"/api/v2/dbm/query/{query_id}/samples", **kwargs)
+
+
 class DatadogClient:
     """Unified Datadog API client."""
 
@@ -67,6 +119,9 @@ class DatadogClient:
         self.rum = rum_api.RUMApi(self.api_client)
         self.ci_pipelines = ci_visibility_pipelines_api.CIVisibilityPipelinesApi(self.api_client)
         self.ci_tests = ci_visibility_tests_api.CIVisibilityTestsApi(self.api_client)
+
+        # DBM (direct HTTP — no dedicated SDK module)
+        self.dbm = DBMClient(self.api_client)
 
     def __enter__(self):
         return self
