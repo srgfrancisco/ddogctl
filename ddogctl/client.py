@@ -54,7 +54,10 @@ class DBMClient:
         """Make a direct REST call through the SDK's ApiClient."""
         params = {k: v for k, v in query_params.items() if v is not None}
         response = self._api_client.call_api(
-            method, path, query_params=params, header_params={"Accept": "application/json"}
+            resource_path=path,
+            method=method,
+            query_params=params,
+            header_params={"Accept": "application/json"},
         )
         import json
 

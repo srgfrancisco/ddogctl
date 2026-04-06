@@ -357,3 +357,29 @@ class TestClientConfiguration:
         DatadogClient(config)
 
         assert mock_config_instance.server_variables["site"] == expected_site
+
+
+class TestDBMClient:
+    """Tests for DBMClient direct HTTP call wrapper."""
+
+    def test_call_api_arg_order_resource_path_before_method(self):
+        """Verify call_api receives (resource_path, method), not (method, resource_path).
+
+        Regression test for #46: reversed arg order caused the HTTP method to be
+        concatenated to the hostname (e.g. api.datadoghq.comget).
+        """
+        import json as json_mod
+
+        mock_api_client = Mock()
+        mock_api_client.call_api.return_value = Mock(
+            response=Mock(data=json_mod.dumps({"data": []}).encode())
+        )
+
+        from ddogctl.client import DBMClient
+
+        client = DBMClient(mock_api_client)
+        client.list_hosts()
+
+        call_kwargs = mock_api_client.call_api.call_args.kwargs
+        assert call_kwargs["resource_path"] == "/api/v2/dbm/hosts"
+        assert call_kwargs["method"] == "GET"
