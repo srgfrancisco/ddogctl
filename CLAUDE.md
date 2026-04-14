@@ -119,7 +119,14 @@ Strict TDD (RED-GREEN-REFACTOR). Coverage target >90%. Reference implementation:
 
 ## Releasing
 
-1. Bump version in `pyproject.toml` and `ddogctl/cli.py` (`@click.version_option`)
-2. PR, merge, then tag: `git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push origin vX.Y.Z`
-3. CI publish job auto-triggers on `refs/tags/v*` via PyPI trusted publishing
-   - **First-time setup**: Configure PyPI Trusted Publishing at https://pypi.org/manage/project/ddogctl/settings/publishing/ (owner: `srgfrancisco`, repo: `ddogctl`, workflow: `publish.yml`)
+Fully automated via `python-semantic-release`. On every merge to `main`:
+1. CI tests run (Python 3.10-3.13)
+2. Commits since last tag are analyzed for conventional commit prefixes
+3. If `feat`/`fix`/`perf`/breaking changes found: version is bumped in `pyproject.toml`, tagged, published to PyPI, and a GitHub Release is created
+4. If only `chore`/`docs`/`ci`/`refactor` commits: no release
+
+Version lives in `pyproject.toml` only. `cli.py` reads it at runtime via `importlib.metadata`.
+
+To force a major bump: use `feat!:` prefix or include `BREAKING CHANGE:` in commit body.
+
+- **Setup requirements**: `RELEASE_TOKEN` (fine-grained PAT with Contents: Read & Write) in repo secrets, PyPI trusted publisher configured for workflow `release.yml`
