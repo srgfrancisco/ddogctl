@@ -1,5 +1,7 @@
 """Main CLI entry point for Datadog CLI."""
 
+from importlib.metadata import version as _get_version
+
 import click
 from rich.console import Console
 
@@ -36,7 +38,7 @@ class AliasGroup(click.Group):
 
 
 @click.group(cls=AliasGroup)
-@click.version_option(version="2.0.3")
+@click.version_option(version=_get_version("ddogctl"))
 @click.option(
     "--profile",
     default=None,
