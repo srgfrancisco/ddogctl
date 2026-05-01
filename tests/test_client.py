@@ -362,24 +362,59 @@ class TestClientConfiguration:
 class TestDBMClient:
     """Tests for DBMClient direct HTTP call wrapper."""
 
-    def test_call_api_arg_order_resource_path_before_method(self):
-        """Verify call_api receives (resource_path, method), not (method, resource_path).
-
-        Regression test for #46: reversed arg order caused the HTTP method to be
-        concatenated to the hostname (e.g. api.datadoghq.comget).
-        """
+    @staticmethod
+    def _mock_api_client():
         import json as json_mod
 
         mock_api_client = Mock()
         mock_api_client.call_api.return_value = Mock(
             response=Mock(data=json_mod.dumps({"data": []}).encode())
         )
+        return mock_api_client
 
+    def test_list_hosts_uses_keyword_args(self):
+        """Regression test for #46: reversed arg order caused the HTTP method to be
+        concatenated to the hostname (e.g. api.datadoghq.comget)."""
         from ddogctl.client import DBMClient
 
-        client = DBMClient(mock_api_client)
-        client.list_hosts()
+        mock_api_client = self._mock_api_client()
+        DBMClient(mock_api_client).list_hosts()
 
         call_kwargs = mock_api_client.call_api.call_args.kwargs
         assert call_kwargs["resource_path"] == "/api/v2/dbm/hosts"
+        assert call_kwargs["method"] == "GET"
+
+    def test_list_queries_uses_keyword_args(self):
+        """Regression test for #50: dbm queries failed with malformed host
+        api.datadoghq.comget when call_api received positional args."""
+        from ddogctl.client import DBMClient
+
+        mock_api_client = self._mock_api_client()
+        DBMClient(mock_api_client).list_queries(from_ts=1, to_ts=2, limit=5)
+
+        call_kwargs = mock_api_client.call_api.call_args.kwargs
+        assert call_kwargs["resource_path"] == "/api/v2/dbm/activity"
+        assert call_kwargs["method"] == "GET"
+
+    def test_list_query_samples_uses_keyword_args(self):
+        """Regression test for #50: dbm samples failed with malformed host
+        api.datadoghq.comget when call_api received positional args."""
+        from ddogctl.client import DBMClient
+
+        mock_api_client = self._mock_api_client()
+        DBMClient(mock_api_client).list_query_samples("abc123", from_ts=1, to_ts=2, limit=1)
+
+        call_kwargs = mock_api_client.call_api.call_args.kwargs
+        assert call_kwargs["resource_path"] == "/api/v2/dbm/query/abc123/samples"
+        assert call_kwargs["method"] == "GET"
+
+    def test_get_query_plan_uses_keyword_args(self):
+        """All DBMClient methods funnel through _call, so verify the explain path too."""
+        from ddogctl.client import DBMClient
+
+        mock_api_client = self._mock_api_client()
+        DBMClient(mock_api_client).get_query_plan("abc123")
+
+        call_kwargs = mock_api_client.call_api.call_args.kwargs
+        assert call_kwargs["resource_path"] == "/api/v2/dbm/query/abc123/plan"
         assert call_kwargs["method"] == "GET"
