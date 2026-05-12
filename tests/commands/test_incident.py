@@ -8,14 +8,20 @@ from ddogctl.commands.incident import incident
 def _make_incident(
     id, title, severity, status, created="2026-01-15T10:00:00Z", modified="2026-01-15T12:00:00Z"
 ):
-    """Create a mock incident object."""
+    """Create a mock incident object.
+
+    The Datadog v2 SDK exposes the incident lifecycle as ``state`` on
+    ``IncidentResponseAttributes`` — not ``status`` — so the mock uses
+    ``spec_set`` to reject the old attribute name and keep tests honest.
+    """
     inc = Mock()
     inc.id = id
     inc.type = "incidents"
     inc.attributes = Mock(
+        spec_set=["title", "severity", "state", "created", "modified", "fields"],
         title=title,
         severity=severity,
-        status=status,
+        state=status,
         created=created,
         modified=modified,
         fields={},
@@ -193,6 +199,47 @@ class TestUpdateIncident:
         result = runner.invoke(incident, ["update", "inc-1"])
         assert result.exit_code != 0
         assert "No update fields" in result.output
+
+    def test_update_incident_status_sent_as_fields_state(self, mock_client, runner):
+        """--status must be sent via fields["state"], not as a top-level attribute.
+
+        Regression test: the Datadog v2 SDK's ``IncidentUpdateAttributes`` has
+        no ``status`` (or ``state``) attribute — state changes flow through
+        the ``fields`` dict. Putting ``status`` on the attributes object
+        silently no-ops the lifecycle update.
+        """
+        inc = _make_incident("inc-1", "Service outage", "SEV-1", "resolved")
+        response = Mock(data=inc)
+        mock_client.incidents.update_incident.return_value = response
+
+        with patch("ddogctl.commands.incident.get_datadog_client", return_value=mock_client):
+            result = runner.invoke(incident, ["update", "inc-1", "--status", "resolved"])
+
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        mock_client.incidents.update_incident.assert_called_once()
+        body = mock_client.incidents.update_incident.call_args.kwargs["body"]
+        attrs = body.data.attributes
+        state_field = attrs.fields["state"]
+        assert str(state_field["type"]) == "dropdown"
+        assert str(state_field["value"]) == "resolved"
+        assert not hasattr(attrs, "status")
+        assert not hasattr(attrs, "state")
+
+    def test_update_incident_json_reads_state(self, mock_client, runner):
+        """JSON output's ``status`` key must reflect the SDK's ``state`` attribute."""
+        inc = _make_incident("inc-1", "Service outage", "SEV-1", "resolved")
+        response = Mock(data=inc)
+        mock_client.incidents.update_incident.return_value = response
+
+        with patch("ddogctl.commands.incident.get_datadog_client", return_value=mock_client):
+            result = runner.invoke(
+                incident,
+                ["update", "inc-1", "--status", "resolved", "--format", "json"],
+            )
+
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        output = json.loads(result.output)
+        assert output["status"] == "resolved"
 
 
 class TestDeleteIncident:

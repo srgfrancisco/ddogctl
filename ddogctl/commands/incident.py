@@ -43,7 +43,7 @@ def list_incidents(format):
                     "id": inc.id,
                     "title": getattr(attrs, "title", ""),
                     "severity": getattr(attrs, "severity", ""),
-                    "status": getattr(attrs, "status", ""),
+                    "status": getattr(attrs, "state", ""),
                     "created": str(getattr(attrs, "created", "")),
                     "modified": str(getattr(attrs, "modified", "")),
                 }
@@ -59,7 +59,7 @@ def list_incidents(format):
 
         for inc in incidents:
             attrs = inc.attributes
-            status_str = str(getattr(attrs, "status", ""))
+            status_str = str(getattr(attrs, "state", ""))
             severity_str = str(getattr(attrs, "severity", ""))
             status_color = {
                 "active": "red",
@@ -100,7 +100,7 @@ def get_incident(incident_id, format):
             "id": inc.id,
             "title": getattr(attrs, "title", ""),
             "severity": getattr(attrs, "severity", ""),
-            "status": getattr(attrs, "status", ""),
+            "status": getattr(attrs, "state", ""),
             "created": str(getattr(attrs, "created", "")),
             "modified": str(getattr(attrs, "modified", "")),
         }
@@ -112,7 +112,7 @@ def get_incident(incident_id, format):
         severity_str = str(getattr(attrs, "severity", ""))
         console.print(f"[bold]Severity:[/bold] [yellow]{severity_str}[/yellow]")
 
-        status_str = str(getattr(attrs, "status", ""))
+        status_str = str(getattr(attrs, "state", ""))
         status_color = {
             "active": "red",
             "stable": "yellow",
@@ -166,7 +166,7 @@ def create_incident(title, severity, format):
             "id": inc.id,
             "title": getattr(attrs, "title", ""),
             "severity": severity,
-            "status": getattr(attrs, "status", ""),
+            "status": getattr(attrs, "state", ""),
         }
         print(json.dumps(output, indent=2))
     else:
@@ -200,12 +200,12 @@ def update_incident(incident_id, title, status, severity, format):
     attrs_kwargs = {}
     if title is not None:
         attrs_kwargs["title"] = title
-    if status is not None:
-        attrs_kwargs["status"] = status
 
     fields = {}
     if severity is not None:
         fields["severity"] = {"type": "dropdown", "value": severity}
+    if status is not None:
+        fields["state"] = {"type": "dropdown", "value": status}
     if fields:
         attrs_kwargs["fields"] = fields
 
@@ -227,7 +227,7 @@ def update_incident(incident_id, title, status, severity, format):
         output = {
             "id": inc.id,
             "title": getattr(attrs, "title", ""),
-            "status": getattr(attrs, "status", ""),
+            "status": getattr(attrs, "state", ""),
         }
         print(json.dumps(output, indent=2))
     else:
