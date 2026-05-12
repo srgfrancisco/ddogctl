@@ -2,12 +2,11 @@
 
 import click
 import json
-from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 from ddogctl.client import get_datadog_client
 from ddogctl.utils.error import handle_api_error
-from ddogctl.utils.time import parse_time_range
+from ddogctl.utils.time import parse_time_range, to_utc_datetime
 
 console = Console()
 
@@ -63,8 +62,8 @@ def pipelines(query, from_time, to_time, limit, format):
     client = get_datadog_client()
 
     from_ts, to_ts = parse_time_range(from_time, to_time)
-    from_dt = datetime.fromtimestamp(from_ts)
-    to_dt = datetime.fromtimestamp(to_ts)
+    from_dt = to_utc_datetime(from_ts)
+    to_dt = to_utc_datetime(to_ts)
 
     with console.status("[cyan]Searching CI pipeline events...[/cyan]"):
         response = client.ci_pipelines.list_ci_app_pipeline_events(
@@ -136,8 +135,8 @@ def tests(query, from_time, to_time, limit, format):
     client = get_datadog_client()
 
     from_ts, to_ts = parse_time_range(from_time, to_time)
-    from_dt = datetime.fromtimestamp(from_ts)
-    to_dt = datetime.fromtimestamp(to_ts)
+    from_dt = to_utc_datetime(from_ts)
+    to_dt = to_utc_datetime(to_ts)
 
     with console.status("[cyan]Searching CI test events...[/cyan]"):
         response = client.ci_tests.list_ci_app_test_events(

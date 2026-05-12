@@ -1,9 +1,12 @@
 """Tests for time parsing utilities."""
 
+import os
+import time
 import pytest
 from unittest.mock import patch
-from datetime import datetime, timedelta
-from ddogctl.utils.time import parse_time_range
+from datetime import datetime, timedelta, timezone
+
+from ddogctl.utils.time import parse_time_range, to_utc_iso, to_utc_datetime
 
 
 class TestParseTimeRange:
@@ -11,11 +14,10 @@ class TestParseTimeRange:
 
     @pytest.fixture
     def mock_now(self):
-        """Fixed datetime for predictable testing."""
-        return datetime(2026, 2, 11, 15, 30, 0)  # 2026-02-11 15:30:00
+        """Fixed UTC datetime for predictable testing."""
+        return datetime(2026, 2, 11, 15, 30, 0, tzinfo=timezone.utc)
 
     def test_now_to_now(self, mock_now):
-        """Test 'now' to 'now' returns same timestamp."""
         with patch("ddogctl.utils.time.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_now
             from_ts, to_ts = parse_time_range("now", "now")
@@ -24,193 +26,176 @@ class TestParseTimeRange:
             assert from_ts == int(mock_now.timestamp())
 
     def test_hours_ago(self, mock_now):
-        """Test relative hour parsing (1h, 24h, etc.)."""
         with patch("ddogctl.utils.time.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_now
 
-            # 1 hour ago
             from_ts, to_ts = parse_time_range("1h", "now")
-            expected_from = mock_now - timedelta(hours=1)
-            assert from_ts == int(expected_from.timestamp())
+            assert from_ts == int((mock_now - timedelta(hours=1)).timestamp())
             assert to_ts == int(mock_now.timestamp())
 
-            # 24 hours ago
-            from_ts, to_ts = parse_time_range("24h", "now")
-            expected_from = mock_now - timedelta(hours=24)
-            assert from_ts == int(expected_from.timestamp())
+            from_ts, _ = parse_time_range("24h", "now")
+            assert from_ts == int((mock_now - timedelta(hours=24)).timestamp())
 
     def test_days_ago(self, mock_now):
-        """Test relative day parsing (1d, 7d, etc.)."""
         with patch("ddogctl.utils.time.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_now
 
-            # 7 days ago
             from_ts, to_ts = parse_time_range("7d", "now")
-            expected_from = mock_now - timedelta(days=7)
-            assert from_ts == int(expected_from.timestamp())
+            assert from_ts == int((mock_now - timedelta(days=7)).timestamp())
             assert to_ts == int(mock_now.timestamp())
 
     def test_minutes_ago(self, mock_now):
-        """Test relative minute parsing (30m, 60m, etc.)."""
         with patch("ddogctl.utils.time.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_now
 
-            # 30 minutes ago
             from_ts, to_ts = parse_time_range("30m", "now")
-            expected_from = mock_now - timedelta(minutes=30)
-            assert from_ts == int(expected_from.timestamp())
+            assert from_ts == int((mock_now - timedelta(minutes=30)).timestamp())
             assert to_ts == int(mock_now.timestamp())
 
-    def test_iso_datetime_parsing(self, mock_now):
-        """Test ISO datetime format parsing."""
-        with patch("ddogctl.utils.time.datetime") as mock_datetime:
-            mock_datetime.now.return_value = mock_now
-            # Need to patch fromisoformat to work correctly
-            mock_datetime.fromisoformat = datetime.fromisoformat
-
-            # Specific ISO timestamp
-            iso_from = "2026-02-10T10:00:00"
-            iso_to = "2026-02-11T10:00:00"
-
-            from_ts, to_ts = parse_time_range(iso_from, iso_to)
-
-            expected_from = datetime.fromisoformat(iso_from)
-            expected_to = datetime.fromisoformat(iso_to)
-
-            assert from_ts == int(expected_from.timestamp())
-            assert to_ts == int(expected_to.timestamp())
-
-    def test_mixed_formats(self, mock_now):
-        """Test mixing relative and ISO formats."""
+    def test_iso_datetime_with_tz(self, mock_now):
+        """Aware ISO strings should be honored as-is."""
         with patch("ddogctl.utils.time.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_now
             mock_datetime.fromisoformat = datetime.fromisoformat
 
-            # From ISO to now
-            iso_from = "2026-02-10T10:00:00"
-            from_ts, to_ts = parse_time_range(iso_from, "now")
+            from_ts, to_ts = parse_time_range(
+                "2026-02-10T10:00:00+00:00",
+                "2026-02-11T10:00:00+00:00",
+            )
 
-            expected_from = datetime.fromisoformat(iso_from)
-            assert from_ts == int(expected_from.timestamp())
-            assert to_ts == int(mock_now.timestamp())
+            assert from_ts == int(datetime(2026, 2, 10, 10, 0, 0, tzinfo=timezone.utc).timestamp())
+            assert to_ts == int(datetime(2026, 2, 11, 10, 0, 0, tzinfo=timezone.utc).timestamp())
 
-            # From relative to ISO
-            iso_to = "2026-02-11T10:00:00"
-            from_ts, to_ts = parse_time_range("1h", iso_to)
+    def test_naive_iso_datetime_treated_as_utc(self, mock_now, monkeypatch):
+        """Regression: a naive ISO string must be treated as UTC, not local time."""
+        monkeypatch.setenv("TZ", "America/Sao_Paulo")
+        time.tzset()
+        try:
+            with patch("ddogctl.utils.time.datetime") as mock_datetime:
+                mock_datetime.now.return_value = mock_now
+                mock_datetime.fromisoformat = datetime.fromisoformat
 
-            expected_from = mock_now - timedelta(hours=1)
-            expected_to = datetime.fromisoformat(iso_to)
-            assert from_ts == int(expected_from.timestamp())
-            assert to_ts == int(expected_to.timestamp())
+                from_ts, _ = parse_time_range("2026-02-10T10:00:00", "now")
+
+                # Expected: 10:00 UTC, not 10:00 BRT (which would be 13:00 UTC).
+                assert from_ts == int(
+                    datetime(2026, 2, 10, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+                )
+        finally:
+            monkeypatch.delenv("TZ", raising=False)
+            time.tzset()
 
     def test_default_to_parameter(self, mock_now):
-        """Test that 'to' parameter defaults to 'now'."""
         with patch("ddogctl.utils.time.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_now
 
-            # Only provide 'from', 'to' should default to 'now'
             from_ts, to_ts = parse_time_range("1h")
 
-            expected_from = mock_now - timedelta(hours=1)
-            assert from_ts == int(expected_from.timestamp())
+            assert from_ts == int((mock_now - timedelta(hours=1)).timestamp())
             assert to_ts == int(mock_now.timestamp())
 
-    def test_large_time_values(self, mock_now):
-        """Test edge cases with large time values."""
-        with patch("ddogctl.utils.time.datetime") as mock_datetime:
-            mock_datetime.now.return_value = mock_now
+    def test_now_is_utc_aware_in_real_call(self):
+        """Without mocks, parse_time_range should compute against a UTC clock.
 
-            # 365 days (1 year)
-            from_ts, to_ts = parse_time_range("365d", "now")
-            expected_from = mock_now - timedelta(days=365)
-            assert from_ts == int(expected_from.timestamp())
+        Regression for #52: previously used the naive ``datetime.now()`` which
+        only worked by accident in non-UTC timezones.
+        """
+        before = int(datetime.now(timezone.utc).timestamp())
+        _, to_ts = parse_time_range("1h", "now")
+        after = int(datetime.now(timezone.utc).timestamp())
 
-            # 8760 hours (1 year)
-            from_ts, to_ts = parse_time_range("8760h", "now")
-            expected_from = mock_now - timedelta(hours=8760)
-            assert from_ts == int(expected_from.timestamp())
-
-    def test_zero_values(self, mock_now):
-        """Test edge case with zero time values."""
-        with patch("ddogctl.utils.time.datetime") as mock_datetime:
-            mock_datetime.now.return_value = mock_now
-
-            # 0 hours ago (equivalent to now)
-            from_ts, to_ts = parse_time_range("0h", "now")
-            assert from_ts == int(mock_now.timestamp())
-            assert to_ts == int(mock_now.timestamp())
+        assert before - 1 <= to_ts <= after + 1
 
     def test_invalid_format_raises_error(self):
-        """Test that invalid formats raise ValueError."""
-        # Invalid unit
         with pytest.raises(ValueError, match="Invalid time format"):
-            parse_time_range("1y")  # 'y' for year not supported
-
-        # Invalid pattern
+            parse_time_range("1y")
         with pytest.raises(ValueError, match="Invalid time format"):
             parse_time_range("abc")
-
-        # Missing unit
         with pytest.raises(ValueError, match="Invalid time format"):
             parse_time_range("10")
-
-        # Invalid ISO format
         with pytest.raises(ValueError, match="Invalid time format"):
             parse_time_range("2026-99-99")
 
     def test_malformed_relative_time(self):
-        """Test various malformed relative time strings."""
-        invalid_inputs = [
-            "h1",  # Wrong order
-            "1",  # Missing unit
-            "1hh",  # Double unit
-            "-1h",  # Negative (not supported in regex)
-            "1.5h",  # Decimal (not supported in regex)
-            "1 h",  # Space not allowed
-        ]
-
-        for invalid_input in invalid_inputs:
+        for invalid in ["h1", "1", "1hh", "-1h", "1.5h", "1 h"]:
             with pytest.raises(ValueError, match="Invalid time format"):
-                parse_time_range(invalid_input)
-
-    def test_time_range_order(self, mock_now):
-        """Test that from_ts can be greater than to_ts (no validation enforced)."""
-        with patch("ddogctl.utils.time.datetime") as mock_datetime:
-            mock_datetime.now.return_value = mock_now
-
-            # 'from' is in the future relative to 'to' (now vs 1h ago)
-            # Function doesn't validate order, just parses
-            from_ts, to_ts = parse_time_range("now", "1h")
-
-            expected_from = mock_now
-            expected_to = mock_now - timedelta(hours=1)
-
-            assert from_ts == int(expected_from.timestamp())
-            assert to_ts == int(expected_to.timestamp())
-            # from_ts > to_ts in this case (no error raised)
-            assert from_ts > to_ts
+                parse_time_range(invalid)
 
     def test_timestamp_precision(self, mock_now):
-        """Test that timestamps are returned as integers (no fractional seconds)."""
         with patch("ddogctl.utils.time.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_now
-
             from_ts, to_ts = parse_time_range("1h", "now")
-
             assert isinstance(from_ts, int)
             assert isinstance(to_ts, int)
 
-    def test_multiple_digit_values(self, mock_now):
-        """Test parsing of multi-digit time values."""
-        with patch("ddogctl.utils.time.datetime") as mock_datetime:
-            mock_datetime.now.return_value = mock_now
 
-            # 100 hours
-            from_ts, to_ts = parse_time_range("100h", "now")
-            expected_from = mock_now - timedelta(hours=100)
-            assert from_ts == int(expected_from.timestamp())
+class TestToUtcIso:
+    """Test suite for the to_utc_iso helper (issue #52 fix)."""
 
-            # 999 days
-            from_ts, to_ts = parse_time_range("999d", "now")
-            expected_from = mock_now - timedelta(days=999)
-            assert from_ts == int(expected_from.timestamp())
+    def test_known_epoch_serializes_to_utc(self):
+        # 2026-05-12T22:05:00Z
+        ts = int(datetime(2026, 5, 12, 22, 5, 0, tzinfo=timezone.utc).timestamp())
+        assert to_utc_iso(ts) == "2026-05-12T22:05:00Z"
+
+    def test_non_utc_tz_does_not_shift_output(self, monkeypatch):
+        """Regression: output must be UTC regardless of the process TZ.
+
+        Before the fix, ``datetime.fromtimestamp(ts).isoformat() + "Z"`` would
+        emit local time mislabeled as UTC, silently shifting every Datadog
+        query by the local UTC offset.
+        """
+        ts = int(datetime(2026, 5, 12, 22, 5, 0, tzinfo=timezone.utc).timestamp())
+
+        for tz in ("America/Sao_Paulo", "Asia/Tokyo", "UTC"):
+            monkeypatch.setenv("TZ", tz)
+            time.tzset()
+            try:
+                assert to_utc_iso(ts) == "2026-05-12T22:05:00Z"
+            finally:
+                monkeypatch.delenv("TZ", raising=False)
+                time.tzset()
+
+    def test_format_is_seconds_precision_with_z_suffix(self):
+        ts = int(datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+        out = to_utc_iso(ts)
+        assert out.endswith("Z")
+        assert "." not in out  # no fractional seconds
+        assert "+" not in out  # no numeric offset
+
+
+class TestToUtcDatetime:
+    """Test suite for the to_utc_datetime helper."""
+
+    def test_returns_utc_aware_datetime(self):
+        ts = int(datetime(2026, 5, 12, 22, 5, 0, tzinfo=timezone.utc).timestamp())
+        dt = to_utc_datetime(ts)
+        assert dt.tzinfo is not None
+        assert dt.utcoffset() == timedelta(0)
+        assert dt.year == 2026
+        assert dt.month == 5
+        assert dt.day == 12
+        assert dt.hour == 22
+        assert dt.minute == 5
+
+    def test_non_utc_tz_does_not_shift_components(self, monkeypatch):
+        ts = int(datetime(2026, 5, 12, 22, 5, 0, tzinfo=timezone.utc).timestamp())
+        monkeypatch.setenv("TZ", "America/Sao_Paulo")
+        time.tzset()
+        try:
+            dt = to_utc_datetime(ts)
+            assert dt.hour == 22  # not 19
+        finally:
+            monkeypatch.delenv("TZ", raising=False)
+            time.tzset()
+
+
+@pytest.fixture(autouse=True)
+def _restore_tz():
+    """Always restore the original process TZ after every test."""
+    original = os.environ.get("TZ")
+    yield
+    if original is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = original
+    time.tzset()

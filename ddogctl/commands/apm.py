@@ -2,12 +2,11 @@
 
 import click
 import json
-from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 from ddogctl.client import get_datadog_client
 from ddogctl.utils.error import handle_api_error
-from ddogctl.utils.time import parse_time_range
+from ddogctl.utils.time import parse_time_range, to_utc_iso
 from ddogctl.utils.spans import aggregate_spans
 
 console = Console()
@@ -77,8 +76,8 @@ def search_traces(service, from_time, to_time, limit, extra_filter, format):
 
     # Parse time range
     from_ts, to_ts = parse_time_range(from_time, to_time)
-    from_str = datetime.fromtimestamp(from_ts).isoformat() + "Z"
-    to_str = datetime.fromtimestamp(to_ts).isoformat() + "Z"
+    from_str = to_utc_iso(from_ts)
+    to_str = to_utc_iso(to_ts)
 
     # Build query
     query = f"service:{service}"
@@ -150,8 +149,8 @@ def analytics(service, from_time, to_time, metric, group_by, format):
 
     # Parse time range
     from_ts, to_ts = parse_time_range(from_time, to_time)
-    from_str = datetime.fromtimestamp(from_ts).isoformat() + "Z"
-    to_str = datetime.fromtimestamp(to_ts).isoformat() + "Z"
+    from_str = to_utc_iso(from_ts)
+    to_str = to_utc_iso(to_ts)
 
     # Build filter (as dict)
     filter_dict = {"query": f"service:{service}", "from": from_str, "to": to_str}
