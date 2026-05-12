@@ -3,12 +3,11 @@
 import click
 import json
 import time
-from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 from ddogctl.client import get_datadog_client
 from ddogctl.utils.error import handle_api_error
-from ddogctl.utils.time import parse_time_range
+from ddogctl.utils.time import parse_time_range, to_utc_iso
 
 console = Console()
 
@@ -95,8 +94,8 @@ def search_logs(query, from_time, to_time, service, status, limit, format):
 
     # Parse time range
     from_ts, to_ts = parse_time_range(from_time, to_time)
-    from_str = datetime.fromtimestamp(from_ts).isoformat() + "Z"
-    to_str = datetime.fromtimestamp(to_ts).isoformat() + "Z"
+    from_str = to_utc_iso(from_ts)
+    to_str = to_utc_iso(to_ts)
 
     # Build query with optional filters
     full_query = query
@@ -154,8 +153,8 @@ def tail_logs(query, lines, service, follow, format):
     def fetch_logs():
         """Fetch recent logs from the API."""
         from_ts, to_ts = parse_time_range("15m", "now")
-        from_str = datetime.fromtimestamp(from_ts).isoformat() + "Z"
-        to_str = datetime.fromtimestamp(to_ts).isoformat() + "Z"
+        from_str = to_utc_iso(from_ts)
+        to_str = to_utc_iso(to_ts)
 
         body = {
             "filter": {
@@ -256,8 +255,8 @@ def query_logs(query, from_time, to_time, group_by, metric, format):
 
     # Parse time range
     from_ts, to_ts = parse_time_range(from_time, to_time)
-    from_str = datetime.fromtimestamp(from_ts).isoformat() + "Z"
-    to_str = datetime.fromtimestamp(to_ts).isoformat() + "Z"
+    from_str = to_utc_iso(from_ts)
+    to_str = to_utc_iso(to_ts)
 
     # Build filter
     filter_dict = {

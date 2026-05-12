@@ -1,8 +1,14 @@
 """Tests for Logs commands."""
 
 import json
-from datetime import datetime
+import os
+import re
+import time
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
+
+import pytest
+
 from tests.conftest import create_mock_log
 
 # Search command tests
@@ -833,3 +839,93 @@ def test_logs_tail_missing_attributes(mock_client, runner):
         assert result.exit_code == 0
         output = json.loads(result.output)
         assert len(output) == 1
+
+
+# Regression tests for issue #52: timestamps must be serialized as UTC ISO
+# strings regardless of the host TZ. Previously the code labeled local time
+# with a "Z" suffix, silently shifting every query by the local UTC offset.
+
+
+ISO_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+@pytest.fixture
+def _non_utc_tz():
+    """Run the test as if the process TZ were America/Sao_Paulo (UTC-3)."""
+    original = os.environ.get("TZ")
+    os.environ["TZ"] = "America/Sao_Paulo"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()
+
+
+def _assert_window_is_utc_now(body, expected_window_seconds, tolerance_seconds=5):
+    """Assert filter.from/to are UTC ISO strings spanning the expected window."""
+    from_str = body["filter"]["from"]
+    to_str = body["filter"]["to"]
+
+    assert ISO_UTC_RE.match(from_str), f"from is not a UTC ISO string: {from_str!r}"
+    assert ISO_UTC_RE.match(to_str), f"to is not a UTC ISO string: {to_str!r}"
+
+    from_dt = datetime.strptime(from_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    to_dt = datetime.strptime(to_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+
+    # ``to`` is "now" — within a few seconds of UTC wall clock.
+    assert (
+        abs((now - to_dt).total_seconds()) <= tolerance_seconds
+    ), f"'to' {to_dt} is not close to UTC now {now}"
+
+    # Window length is the expected number of seconds.
+    window = (to_dt - from_dt).total_seconds()
+    assert (
+        abs(window - expected_window_seconds) <= tolerance_seconds
+    ), f"window {window}s != expected {expected_window_seconds}s"
+
+
+def test_logs_search_uses_utc_iso_under_non_utc_tz(mock_client, runner, _non_utc_tz):
+    """Regression for #52: --from 5m must produce a UTC window, not local-time-as-Z."""
+    from ddogctl.commands.logs import logs
+
+    mock_client.logs.list_logs.return_value = Mock(data=[], meta=Mock(page=Mock(after=None)))
+
+    with patch("ddogctl.commands.logs.get_datadog_client", return_value=mock_client):
+        result = runner.invoke(logs, ["search", "*", "--from", "5m"])
+
+    assert result.exit_code == 0
+    body = mock_client.logs.list_logs.call_args.kwargs["body"]
+    _assert_window_is_utc_now(body, expected_window_seconds=5 * 60)
+
+
+def test_logs_tail_uses_utc_iso_under_non_utc_tz(mock_client, runner, _non_utc_tz):
+    """Regression for #52: tail's 15m window must be in UTC."""
+    from ddogctl.commands.logs import logs
+
+    mock_client.logs.list_logs.return_value = Mock(data=[], meta=Mock(page=Mock(after=None)))
+
+    with patch("ddogctl.commands.logs.get_datadog_client", return_value=mock_client):
+        result = runner.invoke(logs, ["tail", "*"])
+
+    assert result.exit_code == 0
+    body = mock_client.logs.list_logs.call_args.kwargs["body"]
+    _assert_window_is_utc_now(body, expected_window_seconds=15 * 60)
+
+
+def test_logs_query_uses_utc_iso_under_non_utc_tz(mock_client, runner, _non_utc_tz):
+    """Regression for #52: log analytics path must also serialize UTC."""
+    from ddogctl.commands.logs import logs
+
+    mock_client.logs.aggregate_logs.return_value = Mock(data=Mock(buckets=[]))
+
+    with patch("ddogctl.commands.logs.get_datadog_client", return_value=mock_client):
+        result = runner.invoke(logs, ["query", "--query", "*", "--from", "1h"])
+
+    assert result.exit_code == 0
+    body = mock_client.logs.aggregate_logs.call_args.kwargs["body"]
+    _assert_window_is_utc_now(body, expected_window_seconds=60 * 60)

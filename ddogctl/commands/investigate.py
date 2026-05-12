@@ -2,12 +2,11 @@
 
 import click
 import json
-from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 from ddogctl.client import get_datadog_client
 from ddogctl.utils.error import handle_api_error
-from ddogctl.utils.time import parse_time_range
+from ddogctl.utils.time import parse_time_range, to_utc_iso
 from ddogctl.utils.spans import aggregate_spans
 
 console = Console()
@@ -30,8 +29,8 @@ def investigate_latency(service, from_time, to_time, threshold, fmt):
     """Investigate high latency issues for a service."""
     client = get_datadog_client()
     from_ts, to_ts = parse_time_range(from_time, to_time)
-    from_str = datetime.fromtimestamp(from_ts).isoformat() + "Z"
-    to_str = datetime.fromtimestamp(to_ts).isoformat() + "Z"
+    from_str = to_utc_iso(from_ts)
+    to_str = to_utc_iso(to_ts)
 
     threshold_ns = threshold * 1_000_000  # convert ms to ns
 
@@ -127,8 +126,8 @@ def investigate_errors(service, from_time, to_time, fmt):
     """Investigate error patterns for a service."""
     client = get_datadog_client()
     from_ts, to_ts = parse_time_range(from_time, to_time)
-    from_str = datetime.fromtimestamp(from_ts).isoformat() + "Z"
-    to_str = datetime.fromtimestamp(to_ts).isoformat() + "Z"
+    from_str = to_utc_iso(from_ts)
+    to_str = to_utc_iso(to_ts)
 
     with console.status(f"[cyan]Investigating errors for {service}...[/cyan]"):
         # Step 1: Count error traces
@@ -221,8 +220,8 @@ def investigate_throughput(service, from_time, to_time, fmt):
     """Investigate throughput for a service."""
     client = get_datadog_client()
     from_ts, to_ts = parse_time_range(from_time, to_time)
-    from_str = datetime.fromtimestamp(from_ts).isoformat() + "Z"
-    to_str = datetime.fromtimestamp(to_ts).isoformat() + "Z"
+    from_str = to_utc_iso(from_ts)
+    to_str = to_utc_iso(to_ts)
 
     with console.status(f"[cyan]Investigating throughput for {service}...[/cyan]"):
         # Step 1: Get total request count
@@ -292,14 +291,14 @@ def investigate_compare(service, from_time, baseline, fmt):
 
     # Current period: from_time ago to now
     current_from_ts, current_to_ts = parse_time_range(from_time, "now")
-    current_from_str = datetime.fromtimestamp(current_from_ts).isoformat() + "Z"
-    current_to_str = datetime.fromtimestamp(current_to_ts).isoformat() + "Z"
+    current_from_str = to_utc_iso(current_from_ts)
+    current_to_str = to_utc_iso(current_to_ts)
 
     # Baseline period: baseline ago to from_time ago
     baseline_from_ts, _ = parse_time_range(baseline, "now")
     baseline_to_ts = current_from_ts
-    baseline_from_str = datetime.fromtimestamp(baseline_from_ts).isoformat() + "Z"
-    baseline_to_str = datetime.fromtimestamp(baseline_to_ts).isoformat() + "Z"
+    baseline_from_str = to_utc_iso(baseline_from_ts)
+    baseline_to_str = to_utc_iso(baseline_to_ts)
 
     with console.status(f"[cyan]Comparing metrics for {service}...[/cyan]"):
         # Current period: count
