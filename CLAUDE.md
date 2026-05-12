@@ -94,11 +94,11 @@ Tests use `unittest.mock` with Click's `CliRunner`. Key fixtures from `tests/con
 - Factory functions: `create_mock_monitor()`, `create_mock_host()`, `create_mock_span()`, `create_mock_log()`, `create_mock_dbm_host()`, `create_mock_dbm_query()`, `create_mock_dbm_sample()`, `create_mock_service_list()`, `create_mock_rum_event()`
 
 Standard test pattern: patch `get_datadog_client` to return `mock_client`, invoke command via `runner`, assert on output and exit code.
-- **Mock attribute limiting**: Use `Mock(spec_set=["attr1", "attr2"])` to limit attributes. `del mock.attr` doesn't work—Mock returns new Mock for any attribute access.
+- **Mock attribute limiting**: Use `Mock(spec_set=["attr1", "attr2"])` to limit attributes — `del mock.attr` doesn't work, Mock returns a new Mock for any attribute access. For SDK response mocks, the `spec_set` list MUST match the real SDK attribute names (check `openapi_types`); otherwise a typo like `Mock(status=...)` against an SDK that exposes `state` will pass tests but fail in production.
 
 ## Development Workflow
 
-- **Worktrees**: Always create a Git worktree for every new feature, fix, or change. Use the `./.worktrees` folder. Use `git gtr` instead of plain `git worktree` commands.
+- **Worktrees**: Always work in a Git worktree for every new feature, fix, or change. Prefer launching Claude with `claude --worktree`, which auto-creates one under `.claude/worktrees/`. If a session was started without it, fall back to plain `git worktree add` / `git worktree remove`.
 - **Pull requests**: Every change lands via PR — no direct commits to `main`. Open a PR from the worktree branch, get it reviewed, then merge.
 - **Branch protection**: Cannot push directly to `main`—branch protection rules require all changes via PRs.
 - **Commits**: Follow conventional commit format.
@@ -112,10 +112,10 @@ Strict TDD (RED-GREEN-REFACTOR). Coverage target >90%. Reference implementation:
 
 - `uv sync` without `--all-extras` will miss dev dependencies (black, ruff, mypy, pytest).
 - When parallel PRs modify `cli.py`, `client.py`, and `conftest.py` (shared files), merge sequentially and rebase each subsequent PR.
-- `git gtr` may not be available everywhere — falls back to `git worktree` commands.
 - The `claude-review` CI check can take 5-17 minutes. Wait for it before merging.
-- Worktrees: run `uv sync --all-extras` after creation; use `--force` to remove (uv untracked files); use `gh pr merge --squash` without `--delete-branch` if worktree still references branch.
+- Worktrees: run `uv sync --all-extras` after creation; remove with `git worktree remove --force <path>` (the `--force` is needed because `uv sync` creates untracked `.venv` files); use `gh pr merge --squash` without `--delete-branch` if the worktree still references the branch.
 - `git remote prune origin` cleans stale remote tracking refs after branch deletion.
+- `datadog_api_client` SDK field names: verify against the model's `openapi_types` before reading/writing — e.g. v2 incidents use `state` (not `status`) on `IncidentResponseAttributes`, and lifecycle changes flow through `fields["state"]` (dropdown), not a top-level attribute. `getattr(obj, "wrong_name", "")` will silently return `""` forever.
 
 ## Releasing
 
