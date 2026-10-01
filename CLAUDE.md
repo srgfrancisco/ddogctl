@@ -73,7 +73,7 @@ ddogctl completion   {bash, zsh, fish}
 
 **Key modules**:
 - `ddogctl/client.py` — `DatadogClient` wraps `datadog_api_client` SDK. V1 APIs: monitors, metrics, events, hosts, tags, service_checks, downtimes, slos, dashboards, usage, synthetics, notebooks. V2 APIs: logs, spans, service_definitions, incidents, users, rum, ci_pipelines, ci_tests. Use `get_datadog_client()` to instantiate.
-- `ddogctl/config.py` — `DatadogConfig` (Pydantic BaseSettings) loads from env vars (`DD_API_KEY`, `DD_APP_KEY`, `DD_SITE`) or `~/.ddogctl/config.json` profiles. Supports region shortcuts (us, eu, us3, us5, ap1, gov). Precedence: CLI `--profile` flag > env var > active profile > defaults.
+- `ddogctl/config.py` — `DatadogConfig` (Pydantic BaseSettings) loads from env vars (`DD_API_KEY`, `DD_APP_KEY`, `DD_PAT`, `DD_SITE`) or `~/.ddogctl/config.json` profiles. Supports region shortcuts (us, eu, us3, us5, ap1, gov). Precedence: CLI `--profile` flag > env var > active profile > defaults. Auth is a PAT (`DD_PAT`, or a `ddpat_` value in `DD_APP_KEY`) or an API+App key pair. `DatadogClient` sends the PAT as `DD-APPLICATION-KEY` and only sends `DD-API-KEY` when one is set.
 - `ddogctl/utils/error.py` — `@handle_api_error` decorator with retry logic (exponential backoff on 429/5xx, immediate exit on 401/403). Emits structured JSON errors when `--format json`.
 - `ddogctl/utils/exit_codes.py` — Semantic exit codes: 0=success, 1=general, 2=auth, 3=not found, 4=validation, 5=rate limited, 6=server error.
 - `ddogctl/utils/time.py` — `parse_time_range()` handles relative (1h, 24h, 7d) and ISO datetime formats, returns Unix timestamps.

@@ -659,3 +659,89 @@ class TestRegionExpansion:
         assert result.exit_code == 0
         data = json.loads(config_file.read_text())
         assert data["profiles"]["custom"]["site"] == "custom.datadoghq.com"
+
+
+class TestPatProfiles:
+    """Tests for PAT support in config commands."""
+
+    def _paths(self, tmp_path):
+        config_dir = tmp_path / ".ddogctl"
+        return config_dir, config_dir / "config.json"
+
+    def test_init_with_pat(self, runner, tmp_path):
+        config_dir, config_file = self._paths(tmp_path)
+        with (
+            patch("ddogctl.commands.config.get_config_path", return_value=str(config_file)),
+            patch("ddogctl.commands.config.get_config_dir", return_value=str(config_dir)),
+        ):
+            result = runner.invoke(
+                config, ["init", "--auth", "pat"], input="ddpat_abc_secret\nus\nwork\n"
+            )
+
+        assert result.exit_code == 0, result.output
+        profile = json.loads(config_file.read_text())["profiles"]["work"]
+        assert profile == {"pat": "ddpat_abc_secret", "site": "datadoghq.com"}
+
+    def test_set_profile_with_pat(self, runner, tmp_path):
+        config_dir, config_file = self._paths(tmp_path)
+        with (
+            patch("ddogctl.commands.config.get_config_path", return_value=str(config_file)),
+            patch("ddogctl.commands.config.get_config_dir", return_value=str(config_dir)),
+        ):
+            result = runner.invoke(config, ["set-profile", "work", "--pat", "ddpat_abc_secret"])
+
+        assert result.exit_code == 0, result.output
+        profile = json.loads(config_file.read_text())["profiles"]["work"]
+        assert profile["pat"] == "ddpat_abc_secret"
+        assert "api_key" not in profile
+
+    def test_set_profile_with_pat_and_api_key(self, runner, tmp_path):
+        config_dir, config_file = self._paths(tmp_path)
+        with (
+            patch("ddogctl.commands.config.get_config_path", return_value=str(config_file)),
+            patch("ddogctl.commands.config.get_config_dir", return_value=str(config_dir)),
+        ):
+            result = runner.invoke(
+                config, ["set-profile", "work", "--pat", "ddpat_abc_secret", "--api-key", "api"]
+            )
+
+        assert result.exit_code == 0, result.output
+        profile = json.loads(config_file.read_text())["profiles"]["work"]
+        assert profile["api_key"] == "api"
+
+    def test_set_profile_without_credentials_fails(self, runner, tmp_path):
+        config_dir, config_file = self._paths(tmp_path)
+        with (
+            patch("ddogctl.commands.config.get_config_path", return_value=str(config_file)),
+            patch("ddogctl.commands.config.get_config_dir", return_value=str(config_dir)),
+        ):
+            result = runner.invoke(config, ["set-profile", "work"])
+
+        assert result.exit_code != 0
+        assert not config_file.exists()
+
+    def test_get_pat_masked(self, runner, tmp_path):
+        config_dir, config_file = self._paths(tmp_path)
+        config_dir.mkdir()
+        config_file.write_text(
+            json.dumps({"active_profile": "work", "profiles": {"work": {"pat": "ddpat_x_wxyz"}}})
+        )
+        with patch("ddogctl.commands.config.get_config_path", return_value=str(config_file)):
+            result = runner.invoke(config, ["get", "pat"])
+
+        assert result.exit_code == 0
+        assert "****wxyz" in result.output
+        assert "ddpat_x" not in result.output
+
+    def test_list_profiles_masks_pat(self, runner, tmp_path):
+        config_dir, config_file = self._paths(tmp_path)
+        config_dir.mkdir()
+        config_file.write_text(
+            json.dumps({"active_profile": "work", "profiles": {"work": {"pat": "ddpat_x_wxyz"}}})
+        )
+        with patch("ddogctl.commands.config.get_config_path", return_value=str(config_file)):
+            result = runner.invoke(config, ["list-profiles"])
+
+        assert result.exit_code == 0
+        assert "****wxyz" in result.output
+        assert "ddpat_x" not in result.output

@@ -53,11 +53,15 @@ class DBMClient:
     def _call(self, method, path, **query_params):
         """Make a direct REST call through the SDK's ApiClient."""
         params = {k: v for k, v in query_params.items() if v is not None}
+        # call_api does not apply auth settings, so add the auth headers here.
+        headers = {"Accept": "application/json"}
+        for setting in self._api_client.configuration.auth_settings().values():
+            headers[setting["key"]] = setting["value"]
         response = self._api_client.call_api(
             resource_path=path,
             method=method,
             query_params=params,
-            header_params={"Accept": "application/json"},
+            header_params=headers,
         )
         import json
 
@@ -89,8 +93,11 @@ class DatadogClient:
 
     def __init__(self, config: DatadogConfig):
         configuration = Configuration()
-        configuration.api_key["apiKeyAuth"] = config.api_key
-        configuration.api_key["appKeyAuth"] = config.app_key
+        # A PAT goes in DD-APPLICATION-KEY; DD-API-KEY is then optional and only
+        # sent when present (intake endpoints like event post still need it).
+        if config.api_key:
+            configuration.api_key["apiKeyAuth"] = config.api_key
+        configuration.api_key["appKeyAuth"] = config.pat or config.app_key
         configuration.server_variables["site"] = config.site
 
         proxy = os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")

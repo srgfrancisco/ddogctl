@@ -84,7 +84,7 @@ class TestHandleApiError:
             "AUTH_FAILED",
             401,
             "Authentication failed",
-            "Check DD_API_KEY and DD_APP_KEY or run ddogctl config init",
+            "Check DD_PAT (expired?) or DD_API_KEY and DD_APP_KEY, or run ddogctl config init",
         )
 
     def test_403_permission_error(self, mock_emit_error):
@@ -102,7 +102,7 @@ class TestHandleApiError:
             "PERMISSION_DENIED",
             403,
             "Permission denied",
-            "Check API key permissions",
+            "Check key or PAT scopes; intake endpoints (event post, service-check post) need DD_API_KEY",
         )
 
     def test_404_not_found_error(self, mock_emit_error, mock_sleep):
@@ -426,7 +426,10 @@ class TestHandleApiErrorJsonMode:
         assert data["error"] is True
         assert data["code"] == "AUTH_FAILED"
         assert data["status"] == 401
-        assert data["hint"] == "Check DD_API_KEY and DD_APP_KEY or run ddogctl config init"
+        assert (
+            data["hint"]
+            == "Check DD_PAT (expired?) or DD_API_KEY and DD_APP_KEY, or run ddogctl config init"
+        )
 
     def test_403_json_output(self):
         """Test 403 error produces JSON on stderr in JSON mode."""

@@ -37,6 +37,26 @@ def mock_configuration():
 class TestDatadogClient:
     """Tests for DatadogClient class."""
 
+    def test_pat_sent_as_app_key_without_api_key(self, mock_configuration, mock_api_client):
+        _, mock_config_instance = mock_configuration
+        config = DatadogConfig(_env_file=None, DD_PAT="ddpat_abc_secret")
+
+        with patch.dict("os.environ", {}, clear=True):
+            DatadogClient(config)
+
+        assert mock_config_instance.api_key == {"appKeyAuth": "ddpat_abc_secret"}
+
+    def test_pat_with_api_key_sets_both(self, mock_configuration, mock_api_client):
+        _, mock_config_instance = mock_configuration
+        config = DatadogConfig(_env_file=None, DD_PAT="ddpat_abc_secret", DD_API_KEY="api")
+
+        DatadogClient(config)
+
+        assert mock_config_instance.api_key == {
+            "apiKeyAuth": "api",
+            "appKeyAuth": "ddpat_abc_secret",
+        }
+
     def test_client_initialization(self, mock_config, mock_configuration, mock_api_client):
         """Test that DatadogClient initializes correctly."""
         mock_config_class, mock_config_instance = mock_configuration
@@ -366,7 +386,10 @@ class TestDBMClient:
     def _mock_api_client():
         import json as json_mod
 
+        from datadog_api_client import Configuration
+
         mock_api_client = Mock()
+        mock_api_client.configuration = Configuration()
         mock_api_client.call_api.return_value = Mock(
             response=Mock(data=json_mod.dumps({"data": []}).encode())
         )
@@ -418,3 +441,16 @@ class TestDBMClient:
         call_kwargs = mock_api_client.call_api.call_args.kwargs
         assert call_kwargs["resource_path"] == "/api/v2/dbm/query/abc123/plan"
         assert call_kwargs["method"] == "GET"
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_call_sends_auth_headers(self):
+        """call_api does not apply auth itself, so DBMClient must add the headers."""
+        from ddogctl.client import DBMClient
+
+        mock_api_client = self._mock_api_client()
+        mock_api_client.configuration.api_key["appKeyAuth"] = "ddpat_abc_secret"
+        DBMClient(mock_api_client).list_hosts()
+
+        headers = mock_api_client.call_api.call_args.kwargs["header_params"]
+        assert headers["DD-APPLICATION-KEY"] == "ddpat_abc_secret"
+        assert "DD-API-KEY" not in headers
