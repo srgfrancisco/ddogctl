@@ -1,500 +1,640 @@
-"""Tests for DBM (Database Monitoring) commands."""
+"""Tests for DBM (Database Monitoring) commands.
+
+Datadog has no dedicated DBM REST API in the SDK. Per Datadog's guide "Building
+applications with the Database Monitoring API":
+- query metrics come from the v2 scalar metrics API (mysql.queries.*, postgresql.queries.*)
+- query samples / explain plans come from the logs-analytics list endpoint on app.<site>
+
+Scalar responses are built from real datadog_api_client models so column shapes match
+what the API returns (group columns hold lists of tag values, number columns floats).
+"""
 
 import json
-from datetime import datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import patch
+
 from rich.console import Console
-from tests.conftest import create_mock_dbm_host, create_mock_dbm_query, create_mock_dbm_sample
 
-# ---- hosts command tests ----
+from datadog_api_client.exceptions import ForbiddenException
+from datadog_api_client.v2.model.data_scalar_column import DataScalarColumn
+from datadog_api_client.v2.model.group_scalar_column import GroupScalarColumn
+from datadog_api_client.v2.model.scalar_column_type_group import ScalarColumnTypeGroup
+from datadog_api_client.v2.model.scalar_column_type_number import ScalarColumnTypeNumber
+from datadog_api_client.v2.model.scalar_formula_query_response import (
+    ScalarFormulaQueryResponse,
+)
+from datadog_api_client.v2.model.scalar_formula_response_atrributes import (
+    ScalarFormulaResponseAtrributes,
+)
+from datadog_api_client.v2.model.scalar_formula_response_type import ScalarFormulaResponseType
+from datadog_api_client.v2.model.scalar_response import ScalarResponse
+
+from ddogctl.commands.dbm import dbm
+
+NS_PER_MS = 1_000_000
 
 
-def test_dbm_hosts_list_all(mock_client, runner):
-    """Test listing all database hosts and verifying count."""
-    from ddogctl.commands.dbm import dbm
+def scalar_response(groups, numbers):
+    """Build a ScalarFormulaQueryResponse.
 
-    mock_hosts = [
-        create_mock_dbm_host("db-prod-01", "postgresql", "15.4", 42, "running"),
-        create_mock_dbm_host("db-prod-02", "postgresql", "15.4", 38, "running"),
-        create_mock_dbm_host("db-staging-01", "mysql", "8.0", 10, "running"),
+    groups: {tag_name: [value, ...]}; numbers: {formula: [value, ...]} (aligned by index).
+    """
+    columns = [
+        GroupScalarColumn(name=name, type=ScalarColumnTypeGroup.GROUP, values=[[v] for v in values])
+        for name, values in groups.items()
     ]
-    mock_response = Mock(data=mock_hosts)
-    mock_client.dbm.list_hosts.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["hosts", "--format", "json"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert len(output) == 3
-
-
-def test_dbm_hosts_filter_by_env(mock_client, runner):
-    """Test that env filter is passed to the API."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_hosts = [
-        create_mock_dbm_host("db-prod-01", "postgresql", "15.4", 42, "running"),
+    columns += [
+        DataScalarColumn(name=name, type=ScalarColumnTypeNumber.NUMBER, values=values)
+        for name, values in numbers.items()
     ]
-    mock_response = Mock(data=mock_hosts)
-    mock_client.dbm.list_hosts.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["hosts", "--env", "production", "--format", "json"])
-        assert result.exit_code == 0
-        mock_client.dbm.list_hosts.assert_called_once_with(env="production")
-
-
-def test_dbm_hosts_json_format(mock_client, runner):
-    """Test JSON output contains host, engine, version, connections, status."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_hosts = [
-        create_mock_dbm_host("db-prod-01", "postgresql", "15.4", 42, "running"),
-    ]
-    mock_response = Mock(data=mock_hosts)
-    mock_client.dbm.list_hosts.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["hosts", "--format", "json"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert len(output) == 1
-        host = output[0]
-        assert host["host"] == "db-prod-01"
-        assert host["engine"] == "postgresql"
-        assert host["version"] == "15.4"
-        assert host["connections"] == 42
-        assert host["status"] == "running"
-
-
-def test_dbm_hosts_table_format(mock_client, runner):
-    """Test table output contains Host, Engine, Version, Connections, Status columns."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_hosts = [
-        create_mock_dbm_host("db-prod-01", "postgresql", "15.4", 42, "running"),
-        create_mock_dbm_host("db-prod-02", "mysql", "8.0", 20, "stopped"),
-    ]
-    mock_response = Mock(data=mock_hosts)
-    mock_client.dbm.list_hosts.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["hosts"])
-        assert result.exit_code == 0
-        assert "Database Hosts" in result.output
-        assert "db-prod-01" in result.output
-        assert "db-prod-02" in result.output
-        assert "postgresql" in result.output
-        assert "mysql" in result.output
-        assert "15.4" in result.output
-        assert "42" in result.output
-        assert "running" in result.output
-        assert "Total hosts: 2" in result.output
-
-
-def test_dbm_hosts_empty(mock_client, runner):
-    """Test hosts command when no hosts are found."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_response = Mock(data=[])
-    mock_client.dbm.list_hosts.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["hosts"])
-        assert result.exit_code == 0
-        assert "Total hosts: 0" in result.output
-
-
-# ---- queries command tests ----
-
-
-def test_dbm_queries_top_by_latency(mock_client, runner):
-    """Test queries sorted by average latency (default)."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_queries = [
-        create_mock_dbm_query(
-            "q1", "SELECT * FROM users", 50.0, 1000, 50000.0, "web-api", "users_db"
-        ),
-        create_mock_dbm_query(
-            "q2", "SELECT * FROM orders", 30.0, 500, 15000.0, "web-api", "orders_db"
-        ),
-    ]
-    mock_response = Mock(data=mock_queries)
-    mock_client.dbm.list_queries.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["queries", "--format", "json"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert len(output) == 2
-        # Default sort is avg_latency
-        call_kwargs = mock_client.dbm.list_queries.call_args.kwargs
-        assert call_kwargs["sort_by"] == "avg_latency"
-
-
-def test_dbm_queries_top_by_calls(mock_client, runner):
-    """Test queries sorted by number of calls."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_queries = [
-        create_mock_dbm_query(
-            "q1", "SELECT * FROM users", 50.0, 1000, 50000.0, "web-api", "users_db"
-        ),
-    ]
-    mock_response = Mock(data=mock_queries)
-    mock_client.dbm.list_queries.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["queries", "--sort-by", "calls", "--format", "json"])
-        assert result.exit_code == 0
-        call_kwargs = mock_client.dbm.list_queries.call_args.kwargs
-        assert call_kwargs["sort_by"] == "calls"
-
-
-def test_dbm_queries_filter_by_service(mock_client, runner):
-    """Test queries filtered by service."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_queries = [
-        create_mock_dbm_query(
-            "q1", "SELECT * FROM users", 50.0, 1000, 50000.0, "web-api", "users_db"
-        ),
-    ]
-    mock_response = Mock(data=mock_queries)
-    mock_client.dbm.list_queries.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["queries", "--service", "web-api", "--format", "json"])
-        assert result.exit_code == 0
-        call_kwargs = mock_client.dbm.list_queries.call_args.kwargs
-        assert call_kwargs["service"] == "web-api"
-
-
-def test_dbm_queries_filter_by_database(mock_client, runner):
-    """Test queries filtered by database."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_queries = [
-        create_mock_dbm_query(
-            "q1", "SELECT * FROM users", 50.0, 1000, 50000.0, "web-api", "users_db"
-        ),
-    ]
-    mock_response = Mock(data=mock_queries)
-    mock_client.dbm.list_queries.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["queries", "--database", "users_db", "--format", "json"])
-        assert result.exit_code == 0
-        call_kwargs = mock_client.dbm.list_queries.call_args.kwargs
-        assert call_kwargs["database"] == "users_db"
-
-
-def test_dbm_queries_json_format(mock_client, runner):
-    """Test JSON output contains query_id, normalized_query, avg_latency, calls."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_queries = [
-        create_mock_dbm_query(
-            "q1", "SELECT * FROM users WHERE id = ?", 25.5, 1200, 30600.0, "web-api", "users_db"
-        ),
-    ]
-    mock_response = Mock(data=mock_queries)
-    mock_client.dbm.list_queries.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["queries", "--format", "json"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert len(output) == 1
-        q = output[0]
-        assert q["query_id"] == "q1"
-        assert q["normalized_query"] == "SELECT * FROM users WHERE id = ?"
-        assert q["avg_latency_ms"] == 25.5
-        assert q["calls"] == 1200
-        assert q["total_time_ms"] == 30600.0
-        assert q["service"] == "web-api"
-        assert q["database"] == "users_db"
-
-
-def test_dbm_queries_table_format(mock_client, runner):
-    """Test table output contains Query ID, Query, Avg Latency (ms), Calls, Total Time columns."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_queries = [
-        create_mock_dbm_query(
-            "q1", "SELECT * FROM users", 50.0, 1000, 50000.0, "web-api", "users_db"
-        ),
-        create_mock_dbm_query(
-            "q2", "INSERT INTO orders", 10.0, 200, 2000.0, "web-api", "orders_db"
-        ),
-    ]
-    mock_response = Mock(data=mock_queries)
-    mock_client.dbm.list_queries.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        with patch("ddogctl.commands.dbm.console", Console(width=200)):
-            result = runner.invoke(dbm, ["queries"])
-            assert result.exit_code == 0
-            assert "Database Queries" in result.output
-            assert "q1" in result.output
-            assert "q2" in result.output
-            assert "SELECT * FROM users" in result.output
-            assert "50.00" in result.output
-            assert "1000" in result.output
-            assert "Total queries: 2" in result.output
-
-
-def test_dbm_queries_with_limit(mock_client, runner):
-    """Test queries command respects limit parameter."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_queries = [
-        create_mock_dbm_query(
-            f"q{i}", f"SELECT {i}", float(i), i * 100, float(i * 1000), "svc", "db"
+    return ScalarFormulaQueryResponse(
+        data=ScalarResponse(
+            type=ScalarFormulaResponseType.SCALAR_RESPONSE,
+            attributes=ScalarFormulaResponseAtrributes(columns=columns),
         )
-        for i in range(5)
-    ]
-    mock_response = Mock(data=mock_queries)
-    mock_client.dbm.list_queries.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["queries", "--limit", "3"])
-        assert result.exit_code == 0
-        mock_client.dbm.list_queries.assert_called_once()
-        call_kwargs = mock_client.dbm.list_queries.call_args.kwargs
-        assert call_kwargs["limit"] == 3
-
-
-def test_dbm_queries_empty(mock_client, runner):
-    """Test queries command when no queries are found."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_response = Mock(data=[])
-    mock_client.dbm.list_queries.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["queries"])
-        assert result.exit_code == 0
-        assert "Total queries: 0" in result.output
-
-
-# ---- explain command tests ----
-
-
-def test_dbm_explain_query_plan(mock_client, runner):
-    """Test explain command displays execution plan text."""
-    from ddogctl.commands.dbm import dbm
-
-    plan = Mock(
-        query_id="q1",
-        plan_text="Seq Scan on users  (cost=0.00..35.50 rows=2550 width=4)",
-        database="users_db",
-        service="web-api",
-        cost=35.50,
     )
-    mock_response = Mock(data=plan)
-    mock_client.dbm.get_query_plan.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["explain", "q1"])
-        assert result.exit_code == 0
-        assert "Seq Scan on users" in result.output
 
 
-def test_dbm_explain_json_format(mock_client, runner):
-    """Test explain JSON output contains plan details."""
-    from ddogctl.commands.dbm import dbm
+def empty_response():
+    """What the API returns when no series match: no group column, empty number column."""
+    return scalar_response({}, {"calls": []})
 
-    plan = Mock(
-        query_id="q1",
-        plan_text="Index Scan using idx_users_id on users",
-        database="users_db",
-        service="web-api",
-        cost=5.25,
+
+def sent_request(mock_client, call_index=0):
+    """Return (queries by name, formulas) from the Nth scalar request sent."""
+    body = mock_client.dbm.query_scalar.call_args_list[call_index].args[0]
+    attrs = body.data.attributes
+    queries = {q.name: q.query for q in attrs.queries.value}
+    return queries, attrs.formulas
+
+
+def invoke(runner, mock_client, args):
+    # A wide console keeps table cells on one line so assertions can match them.
+    with (
+        patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client),
+        patch("ddogctl.commands.dbm.console", Console(width=200)),
+    ):
+        return runner.invoke(dbm, args)
+
+
+# ---- hosts ----
+
+
+def test_hosts_queries_dbm_metrics_by_host(mock_client, runner):
+    mock_client.dbm.query_scalar.side_effect = [
+        scalar_response(
+            {"host": ["db-1", "db-2"]},
+            {
+                "calls": [1000.0, 10.0],
+                "total_time": [2000 * NS_PER_MS, 50 * NS_PER_MS],
+                "total_time / calls": [2 * NS_PER_MS, 5 * NS_PER_MS],
+            },
+        ),
+        empty_response(),
+    ]
+
+    result = invoke(runner, mock_client, ["hosts", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == [
+        {
+            "host": "db-1",
+            "engine": "mysql",
+            "calls": 1000,
+            "total_time_ms": 2000.0,
+            "avg_latency_ms": 2.0,
+        },
+        {
+            "host": "db-2",
+            "engine": "mysql",
+            "calls": 10,
+            "total_time_ms": 50.0,
+            "avg_latency_ms": 5.0,
+        },
+    ]
+    mysql_queries, _ = sent_request(mock_client, 0)
+    pg_queries, _ = sent_request(mock_client, 1)
+    assert mysql_queries["calls"] == "sum:mysql.queries.count{*} by {host}"
+    assert mysql_queries["total_time"] == "sum:mysql.queries.time{*} by {host}"
+    assert pg_queries["calls"] == "sum:postgresql.queries.count{*} by {host}"
+
+
+def test_hosts_merges_engines_sorted_by_calls(mock_client, runner):
+    mock_client.dbm.query_scalar.side_effect = [
+        scalar_response(
+            {"host": ["mysql-1"]},
+            {"calls": [5.0], "total_time": [5.0], "total_time / calls": [1.0]},
+        ),
+        scalar_response(
+            {"host": ["pg-1"]},
+            {"calls": [50.0], "total_time": [5.0], "total_time / calls": [0.1]},
+        ),
+    ]
+
+    result = invoke(runner, mock_client, ["hosts", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    hosts = json.loads(result.output)
+    assert [(h["host"], h["engine"]) for h in hosts] == [("pg-1", "postgres"), ("mysql-1", "mysql")]
+
+
+def test_hosts_env_and_engine_filters(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = empty_response()
+
+    result = invoke(runner, mock_client, ["hosts", "--env", "prod", "--engine", "postgres"])
+
+    assert result.exit_code == 0, result.output
+    assert mock_client.dbm.query_scalar.call_count == 1
+    queries, _ = sent_request(mock_client)
+    assert queries["calls"] == "sum:postgresql.queries.count{env:prod} by {host}"
+
+
+def test_hosts_sends_time_range_in_ms_and_ranks_server_side(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = empty_response()
+
+    with patch("ddogctl.commands.dbm.parse_time_range", return_value=(1000, 4600)):
+        result = invoke(runner, mock_client, ["hosts", "--engine", "mysql", "--limit", "7"])
+
+    assert result.exit_code == 0, result.output
+    attrs = mock_client.dbm.query_scalar.call_args.args[0].data.attributes
+    assert (attrs._from, attrs.to) == (1_000_000, 4_600_000)
+    limited = [f for f in attrs.formulas if "limit" in f]
+    assert [f.formula for f in limited] == ["calls"]
+    # One extra row so a trailing "_other" bucket doesn't cost a real row.
+    assert limited[0].limit.count == 8
+    assert str(limited[0].limit.order) == "desc"
+
+
+def test_hosts_table_empty(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = empty_response()
+
+    result = invoke(runner, mock_client, ["hosts"])
+
+    assert result.exit_code == 0, result.output
+    assert "No hosts are reporting DBM query metrics" in result.output
+
+
+def test_hosts_table_output(mock_client, runner):
+    mock_client.dbm.query_scalar.side_effect = [
+        scalar_response(
+            {"host": ["db-prod-01"]},
+            {
+                "calls": [42.0],
+                "total_time": [84 * NS_PER_MS],
+                "total_time / calls": [2 * NS_PER_MS],
+            },
+        ),
+        empty_response(),
+    ]
+
+    result = invoke(runner, mock_client, ["hosts"])
+
+    assert result.exit_code == 0, result.output
+    assert "db-prod-01" in result.output
+    assert "mysql" in result.output
+    assert "Total hosts: 1" in result.output
+
+
+# ---- queries ----
+
+
+def mysql_queries_response():
+    return scalar_response(
+        {
+            "query_signature": ["sig-a", "sig-b", "_other"],
+            "query": ["SELECT * FROM users WHERE id = ?", "UPDATE orders SET x = ?", "_other"],
+        },
+        {
+            "calls": [100.0, 4.0, 9999.0],
+            "total_time": [500 * NS_PER_MS, 400 * NS_PER_MS, 1.0],
+            "total_time / calls": [5 * NS_PER_MS, 100 * NS_PER_MS, 1.0],
+            "lock_time": [10 * NS_PER_MS, 0.0, 1.0],
+            "rows_examined": [1000.0, 8.0, 1.0],
+            "rows_examined / calls": [10.0, 2.0, 1.0],
+        },
     )
-    mock_response = Mock(data=plan)
-    mock_client.dbm.get_query_plan.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["explain", "q1", "--format", "json"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["query_id"] == "q1"
-        assert output["plan"] == "Index Scan using idx_users_id on users"
-        assert output["database"] == "users_db"
-        assert output["service"] == "web-api"
-        assert output["cost"] == 5.25
 
 
-def test_dbm_explain_text_format(mock_client, runner):
-    """Test explain text output is formatted properly."""
-    from ddogctl.commands.dbm import dbm
+def test_queries_json_output_mysql(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = mysql_queries_response()
 
-    plan = Mock(
-        query_id="q1",
-        plan_text="Seq Scan on users\n  Filter: (active = true)\n  Rows: 500",
-        database="users_db",
-        service="web-api",
-        cost=35.50,
+    result = invoke(runner, mock_client, ["queries", "--engine", "mysql", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == [
+        {
+            "query_signature": "sig-a",
+            "query": "SELECT * FROM users WHERE id = ?",
+            "engine": "mysql",
+            "calls": 100,
+            "total_time_ms": 500.0,
+            "avg_latency_ms": 5.0,
+            "lock_time_ms": 10.0,
+            "rows_examined": 1000,
+            "avg_rows_examined": 10.0,
+        },
+        {
+            "query_signature": "sig-b",
+            "query": "UPDATE orders SET x = ?",
+            "engine": "mysql",
+            "calls": 4,
+            "total_time_ms": 400.0,
+            "avg_latency_ms": 100.0,
+            "lock_time_ms": 0.0,
+            "rows_examined": 8,
+            "avg_rows_examined": 2.0,
+        },
+    ]
+
+
+def test_queries_builds_metric_queries_grouped_by_signature(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = mysql_queries_response()
+
+    result = invoke(runner, mock_client, ["queries", "--engine", "mysql", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    queries, _ = sent_request(mock_client)
+    assert queries == {
+        "calls": "sum:mysql.queries.count{*} by {query_signature,query}",
+        "total_time": "sum:mysql.queries.time{*} by {query_signature,query}",
+        "lock_time": "sum:mysql.queries.lock_time{*} by {query_signature,query}",
+        "rows_examined": "sum:mysql.queries.rows_examined{*} by {query_signature,query}",
+    }
+
+
+def test_queries_filters_map_to_tags(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = empty_response()
+
+    args = ["queries", "--engine", "mysql", "--host", "db-1", "--database", "shop"]
+    args += ["--service", "api", "--env", "prod", "--tag", "team:core"]
+    result = invoke(runner, mock_client, args)
+
+    assert result.exit_code == 0, result.output
+    queries, _ = sent_request(mock_client)
+    scope = "{host:db-1,schema:shop,service:api,env:prod,team:core}"
+    assert queries["calls"] == f"sum:mysql.queries.count{scope} by {{query_signature,query}}"
+
+
+def test_queries_postgres_uses_db_tag_and_rows_metric(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = empty_response()
+
+    args = ["queries", "--engine", "postgres", "--database", "shop", "--sort-by", "rows"]
+    result = invoke(runner, mock_client, args)
+
+    assert result.exit_code == 0, result.output
+    queries, formulas = sent_request(mock_client)
+    assert queries == {
+        "calls": "sum:postgresql.queries.count{db:shop} by {query_signature,query}",
+        "total_time": "sum:postgresql.queries.time{db:shop} by {query_signature,query}",
+        "rows": "sum:postgresql.queries.rows{db:shop} by {query_signature,query}",
+    }
+    assert [f.formula for f in formulas if "limit" in f] == ["rows"]
+
+
+def test_queries_postgres_json_output(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = scalar_response(
+        {"query_signature": ["sig-p"], "query": ["SELECT 1"]},
+        {
+            "calls": [10.0],
+            "total_time": [20 * NS_PER_MS],
+            "total_time / calls": [2 * NS_PER_MS],
+            "rows": [30.0],
+            "rows / calls": [3.0],
+        },
     )
-    mock_response = Mock(data=plan)
-    mock_client.dbm.get_query_plan.return_value = mock_response
 
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["explain", "q1", "--format", "text"])
-        assert result.exit_code == 0
-        assert "Query Plan for q1" in result.output
-        assert "Seq Scan on users" in result.output
-        assert "Filter: (active = true)" in result.output
+    result = invoke(runner, mock_client, ["queries", "--engine", "postgres", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == [
+        {
+            "query_signature": "sig-p",
+            "query": "SELECT 1",
+            "engine": "postgres",
+            "calls": 10,
+            "total_time_ms": 20.0,
+            "avg_latency_ms": 2.0,
+            "rows": 30,
+            "avg_rows": 3.0,
+        }
+    ]
 
 
-def test_dbm_explain_with_metadata(mock_client, runner):
-    """Test explain shows query metadata (database, service)."""
-    from ddogctl.commands.dbm import dbm
+def test_queries_sort_by_maps_to_limited_formula(mock_client, runner):
+    expected = {
+        "calls": "calls",
+        "total_time": "total_time",
+        "avg_latency": "total_time / calls",
+        "lock_time": "lock_time",
+        "rows_examined": "rows_examined",
+    }
+    for sort_by, formula in expected.items():
+        mock_client.dbm.query_scalar.reset_mock()
+        mock_client.dbm.query_scalar.return_value = empty_response()
 
-    plan = Mock(
-        query_id="q42",
-        plan_text="Hash Join",
-        database="analytics_db",
-        service="analytics-api",
-        cost=120.0,
+        args = ["queries", "--engine", "mysql", "--sort-by", sort_by, "--limit", "5"]
+        result = invoke(runner, mock_client, args)
+
+        assert result.exit_code == 0, result.output
+        _, formulas = sent_request(mock_client)
+        limited = [f for f in formulas if "limit" in f]
+        assert [f.formula for f in limited] == [formula], sort_by
+        assert limited[0].limit.count == 6
+
+
+def test_queries_default_sort_is_total_time(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = empty_response()
+
+    result = invoke(runner, mock_client, ["queries", "--engine", "mysql"])
+
+    assert result.exit_code == 0, result.output
+    _, formulas = sent_request(mock_client)
+    assert [f.formula for f in formulas if "limit" in f] == ["total_time"]
+
+
+def test_queries_trims_to_limit_after_dropping_other(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = mysql_queries_response()
+
+    args = ["queries", "--engine", "mysql", "--limit", "1", "--format", "json"]
+    result = invoke(runner, mock_client, args)
+
+    assert result.exit_code == 0, result.output
+    assert [q["query_signature"] for q in json.loads(result.output)] == ["sig-a"]
+
+
+def test_queries_sort_by_unsupported_for_engine(mock_client, runner):
+    args = ["queries", "--engine", "postgres", "--sort-by", "lock_time"]
+    result = invoke(runner, mock_client, args)
+
+    assert result.exit_code == 4
+    assert "lock_time" in result.output
+    mock_client.dbm.query_scalar.assert_not_called()
+
+
+def test_queries_auto_engine_falls_back_to_postgres(mock_client, runner):
+    pg = scalar_response(
+        {"query_signature": ["sig-p"], "query": ["SELECT 1"]},
+        {
+            "calls": [1.0],
+            "total_time": [1.0],
+            "total_time / calls": [1.0],
+            "rows": [1.0],
+            "rows / calls": [1.0],
+        },
     )
-    mock_response = Mock(data=plan)
-    mock_client.dbm.get_query_plan.return_value = mock_response
+    mock_client.dbm.query_scalar.side_effect = [empty_response(), pg]
 
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["explain", "q42"])
-        assert result.exit_code == 0
-        assert "analytics_db" in result.output
-        assert "analytics-api" in result.output
+    result = invoke(runner, mock_client, ["queries", "--format", "json"])
 
-
-def test_dbm_explain_not_found(mock_client, runner):
-    """Test explain handles missing query gracefully."""
-    from ddogctl.commands.dbm import dbm
-
-    mock_response = Mock(data=None)
-    mock_client.dbm.get_query_plan.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["explain", "nonexistent-query"])
-        assert result.exit_code == 0
-        assert "not found" in result.output
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["engine"] == "postgres"
+    assert mock_client.dbm.query_scalar.call_count == 2
 
 
-# ---- samples command tests ----
+def test_queries_auto_engine_stops_at_first_engine_with_data(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = mysql_queries_response()
+
+    result = invoke(runner, mock_client, ["queries", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert mock_client.dbm.query_scalar.call_count == 1
 
 
-def test_dbm_samples_list(mock_client, runner):
-    """Test listing sample executions for a query."""
-    from ddogctl.commands.dbm import dbm
+def test_queries_auto_engine_skips_engines_without_sort_metric(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = empty_response()
 
-    now = datetime.now()
-    mock_samples = [
-        create_mock_dbm_sample(now - timedelta(minutes=5), 25.0, 10, {"id": 1}),
-        create_mock_dbm_sample(now - timedelta(minutes=3), 30.0, 15, {"id": 2}),
-        create_mock_dbm_sample(now - timedelta(minutes=1), 20.0, 8, {"id": 3}),
+    result = invoke(runner, mock_client, ["queries", "--sort-by", "rows"])
+
+    assert result.exit_code == 0, result.output
+    assert mock_client.dbm.query_scalar.call_count == 1
+    queries, _ = sent_request(mock_client)
+    assert queries["calls"].startswith("sum:postgresql.queries.count")
+
+
+def test_queries_table_output(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = mysql_queries_response()
+
+    result = invoke(runner, mock_client, ["queries", "--engine", "mysql"])
+
+    assert result.exit_code == 0, result.output
+    assert "sig-a" in result.output
+    assert "SELECT * FROM users" in result.output
+    assert "Lock (ms)" in result.output
+    assert "Total queries: 2" in result.output
+
+
+def test_queries_table_empty(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = empty_response()
+
+    result = invoke(runner, mock_client, ["queries"])
+
+    assert result.exit_code == 0, result.output
+    assert "No DBM query metrics found" in result.output
+
+
+def test_queries_handles_null_values(mock_client, runner):
+    mock_client.dbm.query_scalar.return_value = scalar_response(
+        {"query_signature": ["sig-a"], "query": ["SELECT 1"]},
+        {
+            "calls": [None],
+            "total_time": [5 * NS_PER_MS],
+            "total_time / calls": [None],
+            "lock_time": [None],
+            "rows_examined": [None],
+            "rows_examined / calls": [None],
+        },
+    )
+
+    args = ["queries", "--engine", "mysql", "--format", "json"]
+    result = invoke(runner, mock_client, args)
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(result.output)[0]
+    assert row["calls"] == 0
+    assert row["avg_latency_ms"] is None
+    assert row["total_time_ms"] == 5.0
+
+
+def test_queries_rejects_unknown_sort_by(mock_client, runner):
+    result = invoke(runner, mock_client, ["queries", "--sort-by", "bogus"])
+
+    assert result.exit_code != 0
+    mock_client.dbm.query_scalar.assert_not_called()
+
+
+# ---- samples ----
+
+
+def sample_event(statement="SELECT * FROM users WHERE id = ?", signature="sig-a"):
+    return {
+        "event": {
+            "timestamp": "2026-10-01T12:00:00.000Z",
+            "host": "db-1",
+            "custom": {
+                "db": {
+                    "statement": statement,
+                    "query_signature": signature,
+                    "wait_event": "ClientRead",
+                    "wait_event_type": "Client",
+                    "rows": 3,
+                }
+            },
+        }
+    }
+
+
+def test_samples_searches_activity_by_signature(mock_client, runner):
+    mock_client.dbm.search_events.return_value = [sample_event()]
+
+    with patch("ddogctl.commands.dbm.parse_time_range", return_value=(1000, 4600)):
+        args = ["samples", "sig-a", "--host", "db-1", "--limit", "5", "--format", "json"]
+        result = invoke(runner, mock_client, args)
+
+    assert result.exit_code == 0, result.output
+    mock_client.dbm.search_events.assert_called_once_with(
+        "dbm_type:activity @db.query_signature:sig-a host:db-1",
+        from_ms=1_000_000,
+        to_ms=4_600_000,
+        limit=5,
+    )
+    assert json.loads(result.output) == [sample_event()["event"]]
+
+
+def test_samples_without_signature_lists_recent_activity(mock_client, runner):
+    mock_client.dbm.search_events.return_value = []
+
+    args = ["samples", "--service", "api", "--env", "prod"]
+    result = invoke(runner, mock_client, args)
+
+    assert result.exit_code == 0, result.output
+    query = mock_client.dbm.search_events.call_args.args[0]
+    assert query == "dbm_type:activity service:api env:prod"
+    assert "No query samples found" in result.output
+
+
+def test_samples_table_output(mock_client, runner):
+    mock_client.dbm.search_events.return_value = [sample_event()]
+
+    result = invoke(runner, mock_client, ["samples", "sig-a"])
+
+    assert result.exit_code == 0, result.output
+    assert "db-1" in result.output
+    assert "ClientRead" in result.output
+    assert "SELECT * FROM users" in result.output
+    assert "Total samples: 1" in result.output
+
+
+def test_samples_forbidden_explains_key_requirement(mock_client, runner):
+    mock_client.dbm.search_events.side_effect = ForbiddenException(status=403, reason="Forbidden")
+    mock_client.dbm.app_url = "https://app.datadoghq.com"
+
+    result = invoke(runner, mock_client, ["samples", "sig-a"])
+
+    assert result.exit_code == 2
+    assert "unscoped application key" in result.output
+    assert "https://app.datadoghq.com/databases/samples" in result.output
+
+
+def test_samples_forbidden_json_error(mock_client, runner):
+    mock_client.dbm.search_events.side_effect = ForbiddenException(status=403, reason="Forbidden")
+    mock_client.dbm.app_url = "https://app.datadoghq.eu"
+
+    result = invoke(runner, mock_client, ["samples", "sig-a", "--format", "json"])
+
+    assert result.exit_code == 2
+    error = json.loads(result.stderr)
+    assert error["code"] == "PERMISSION_DENIED"
+    assert "https://app.datadoghq.eu/databases/samples" in error["hint"]
+
+
+# ---- explain ----
+
+
+def plan_event(definition='{"Plan": {"Node Type": "Seq Scan", "Relation Name": "users"}}'):
+    return {
+        "event": {
+            "timestamp": "2026-10-01T12:00:00.000Z",
+            "host": "db-1",
+            "custom": {
+                "db": {
+                    "statement": "SELECT * FROM users",
+                    "query_signature": "sig-a",
+                    "plan": {"definition": definition, "cost": 42.5, "signature": "plan-1"},
+                }
+            },
+        }
+    }
+
+
+def test_explain_searches_plans_by_signature(mock_client, runner):
+    mock_client.dbm.search_events.return_value = [plan_event()]
+
+    with patch("ddogctl.commands.dbm.parse_time_range", return_value=(1000, 4600)):
+        result = invoke(runner, mock_client, ["explain", "sig-a", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    mock_client.dbm.search_events.assert_called_once_with(
+        "dbm_type:plan @db.query_signature:sig-a",
+        from_ms=1_000_000,
+        to_ms=4_600_000,
+        limit=1,
+    )
+    assert json.loads(result.output) == [
+        {
+            "timestamp": "2026-10-01T12:00:00.000Z",
+            "host": "db-1",
+            "query_signature": "sig-a",
+            "statement": "SELECT * FROM users",
+            "plan_signature": "plan-1",
+            "cost": 42.5,
+            "plan": {"Plan": {"Node Type": "Seq Scan", "Relation Name": "users"}},
+        }
     ]
-    mock_response = Mock(data=mock_samples)
-    mock_client.dbm.list_query_samples.return_value = mock_response
-
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["samples", "q1", "--format", "json"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert len(output) == 3
 
 
-def test_dbm_samples_json_format(mock_client, runner):
-    """Test JSON output contains timestamp, duration_ms, rows_affected."""
-    from ddogctl.commands.dbm import dbm
+def test_explain_defaults_to_24h_window(mock_client, runner):
+    mock_client.dbm.search_events.return_value = [plan_event()]
 
-    now = datetime.now()
-    mock_samples = [
-        create_mock_dbm_sample(now, 45.5, 25, {"user_id": 42}),
-    ]
-    mock_response = Mock(data=mock_samples)
-    mock_client.dbm.list_query_samples.return_value = mock_response
+    with patch("ddogctl.commands.dbm.parse_time_range", return_value=(0, 1)) as ptr:
+        result = invoke(runner, mock_client, ["explain", "sig-a"])
 
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["samples", "q1", "--format", "json"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert len(output) == 1
-        sample = output[0]
-        assert "timestamp" in sample
-        assert sample["duration_ms"] == 45.5
-        assert sample["rows_affected"] == 25
-        assert sample["parameters"] == {"user_id": 42}
+    assert result.exit_code == 0, result.output
+    ptr.assert_called_once_with("24h", "now")
 
 
-def test_dbm_samples_table_format(mock_client, runner):
-    """Test table output with Time, Duration (ms), Rows Affected, Parameters columns."""
-    from ddogctl.commands.dbm import dbm
+def test_explain_text_output(mock_client, runner):
+    mock_client.dbm.search_events.return_value = [plan_event()]
 
-    now = datetime.now()
-    mock_samples = [
-        create_mock_dbm_sample(now, 45.5, 25, {"user_id": 42}),
-        create_mock_dbm_sample(now - timedelta(minutes=1), 30.0, 10, {"user_id": 7}),
-    ]
-    mock_response = Mock(data=mock_samples)
-    mock_client.dbm.list_query_samples.return_value = mock_response
+    result = invoke(runner, mock_client, ["explain", "sig-a"])
 
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["samples", "q1"])
-        assert result.exit_code == 0
-        assert "Query Samples for q1" in result.output
-        assert "45.50" in result.output
-        assert "25" in result.output
-        assert "Total samples: 2" in result.output
+    assert result.exit_code == 0, result.output
+    assert "SELECT * FROM users" in result.output
+    assert "42.5" in result.output
+    assert '"Node Type": "Seq Scan"' in result.output
 
 
-def test_dbm_samples_with_limit(mock_client, runner):
-    """Test samples command respects limit parameter."""
-    from ddogctl.commands.dbm import dbm
+def test_explain_keeps_non_json_plan_as_text(mock_client, runner):
+    mock_client.dbm.search_events.return_value = [plan_event(definition="-> Table scan on users")]
 
-    now = datetime.now()
-    mock_samples = [
-        create_mock_dbm_sample(now - timedelta(minutes=i), 10.0 + i, i, {}) for i in range(5)
-    ]
-    mock_response = Mock(data=mock_samples)
-    mock_client.dbm.list_query_samples.return_value = mock_response
+    result = invoke(runner, mock_client, ["explain", "sig-a", "--format", "json"])
 
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["samples", "q1", "--limit", "3"])
-        assert result.exit_code == 0
-        mock_client.dbm.list_query_samples.assert_called_once()
-        call_kwargs = mock_client.dbm.list_query_samples.call_args.kwargs
-        assert call_kwargs["limit"] == 3
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["plan"] == "-> Table scan on users"
 
 
-def test_dbm_samples_time_range(mock_client, runner):
-    """Test samples command passes time range filters."""
-    from ddogctl.commands.dbm import dbm
+def test_explain_not_found(mock_client, runner):
+    mock_client.dbm.search_events.return_value = []
 
-    mock_response = Mock(data=[])
-    mock_client.dbm.list_query_samples.return_value = mock_response
+    result = invoke(runner, mock_client, ["explain", "sig-missing"])
 
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["samples", "q1", "--from", "24h", "--to", "now"])
-        assert result.exit_code == 0
-        mock_client.dbm.list_query_samples.assert_called_once()
-        call_kwargs = mock_client.dbm.list_query_samples.call_args.kwargs
-        assert "from_ts" in call_kwargs
-        assert "to_ts" in call_kwargs
-        # from_ts should be roughly 24h ago (less than to_ts)
-        assert call_kwargs["from_ts"] < call_kwargs["to_ts"]
+    assert result.exit_code == 3
+    assert "No explain plans found for sig-missing" in result.output
 
 
-def test_dbm_samples_empty(mock_client, runner):
-    """Test samples command when no samples are found."""
-    from ddogctl.commands.dbm import dbm
+def test_explain_forbidden_explains_key_requirement(mock_client, runner):
+    mock_client.dbm.search_events.side_effect = ForbiddenException(status=403, reason="Forbidden")
+    mock_client.dbm.app_url = "https://app.datadoghq.com"
 
-    mock_response = Mock(data=[])
-    mock_client.dbm.list_query_samples.return_value = mock_response
+    result = invoke(runner, mock_client, ["explain", "sig-a"])
 
-    with patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client):
-        result = runner.invoke(dbm, ["samples", "q1"])
-        assert result.exit_code == 0
-        assert "Total samples: 0" in result.output
+    assert result.exit_code == 2
+    assert "unscoped application key" in result.output

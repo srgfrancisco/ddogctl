@@ -380,77 +380,65 @@ class TestClientConfiguration:
 
 
 class TestDBMClient:
-    """Tests for DBMClient direct HTTP call wrapper."""
+    """Tests for DBMClient: scalar metrics + DBM logs-analytics search."""
 
     @staticmethod
-    def _mock_api_client():
-        import json as json_mod
-
+    def _mock_api_client(body=b'{"result": {"events": [{"event": {"host": "db-1"}}]}}'):
         from datadog_api_client import Configuration
 
         mock_api_client = Mock()
         mock_api_client.configuration = Configuration()
-        mock_api_client.call_api.return_value = Mock(
-            response=Mock(data=json_mod.dumps({"data": []}).encode())
-        )
+        mock_api_client.call_api.return_value = Mock(data=body)
         return mock_api_client
 
-    def test_list_hosts_uses_keyword_args(self):
-        """Regression test for #46: reversed arg order caused the HTTP method to be
-        concatenated to the hostname (e.g. api.datadoghq.comget)."""
+    def test_search_events_posts_to_app_host(self):
         from ddogctl.client import DBMClient
 
         mock_api_client = self._mock_api_client()
-        DBMClient(mock_api_client).list_hosts()
+        client = DBMClient(mock_api_client, "datadoghq.eu")
+        events = client.search_events("dbm_type:plan", from_ms=1, to_ms=2, limit=3)
 
-        call_kwargs = mock_api_client.call_api.call_args.kwargs
-        assert call_kwargs["resource_path"] == "/api/v2/dbm/hosts"
-        assert call_kwargs["method"] == "GET"
+        assert events == [{"event": {"host": "db-1"}}]
+        assert client.app_url == "https://app.datadoghq.eu"
+        kwargs = mock_api_client.call_api.call_args.kwargs
+        assert kwargs["resource_path"] == "/api/v1/logs-analytics/list"
+        assert kwargs["method"] == "POST"
+        assert kwargs["host"] == "https://app.datadoghq.eu"
+        assert kwargs["query_params"] == [("type", "databasequery")]
+        assert kwargs["body"] == {
+            "list": {
+                "indexes": ["databasequery"],
+                "limit": 3,
+                "search": {"query": "dbm_type:plan"},
+                "sorts": [{"time": {"order": "desc"}}],
+                "time": {"from": 1, "to": 2},
+            }
+        }
 
-    def test_list_queries_uses_keyword_args(self):
-        """Regression test for #50: dbm queries failed with malformed host
-        api.datadoghq.comget when call_api received positional args."""
+    def test_search_events_empty_body(self):
         from ddogctl.client import DBMClient
 
-        mock_api_client = self._mock_api_client()
-        DBMClient(mock_api_client).list_queries(from_ts=1, to_ts=2, limit=5)
+        mock_api_client = self._mock_api_client(body=b"")
 
-        call_kwargs = mock_api_client.call_api.call_args.kwargs
-        assert call_kwargs["resource_path"] == "/api/v2/dbm/activity"
-        assert call_kwargs["method"] == "GET"
-
-    def test_list_query_samples_uses_keyword_args(self):
-        """Regression test for #50: dbm samples failed with malformed host
-        api.datadoghq.comget when call_api received positional args."""
-        from ddogctl.client import DBMClient
-
-        mock_api_client = self._mock_api_client()
-        DBMClient(mock_api_client).list_query_samples("abc123", from_ts=1, to_ts=2, limit=1)
-
-        call_kwargs = mock_api_client.call_api.call_args.kwargs
-        assert call_kwargs["resource_path"] == "/api/v2/dbm/query/abc123/samples"
-        assert call_kwargs["method"] == "GET"
-
-    def test_get_query_plan_uses_keyword_args(self):
-        """All DBMClient methods funnel through _call, so verify the explain path too."""
-        from ddogctl.client import DBMClient
-
-        mock_api_client = self._mock_api_client()
-        DBMClient(mock_api_client).get_query_plan("abc123")
-
-        call_kwargs = mock_api_client.call_api.call_args.kwargs
-        assert call_kwargs["resource_path"] == "/api/v2/dbm/query/abc123/plan"
-        assert call_kwargs["method"] == "GET"
+        assert DBMClient(mock_api_client, "datadoghq.com").search_events("x", 1, 2, 3) == []
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_call_sends_auth_headers(self):
+    def test_search_events_sends_auth_headers(self):
         """call_api does not apply auth itself, so DBMClient must add the headers."""
         from ddogctl.client import DBMClient
 
         mock_api_client = self._mock_api_client()
         mock_api_client.configuration.api_key["appKeyAuth"] = "ddpat_abc_secret"
-        DBMClient(mock_api_client).list_hosts()
+        DBMClient(mock_api_client, "datadoghq.com").search_events("x", 1, 2, 3)
 
         headers = mock_api_client.call_api.call_args.kwargs["header_params"]
         assert headers["DD-APPLICATION-KEY"] == "ddpat_abc_secret"
         assert "DD-API-KEY" not in headers
+
+    def test_query_scalar_uses_v2_metrics_api(self):
+        from ddogctl.client import DBMClient
+
+        with patch("ddogctl.client.metrics_api_v2.MetricsApi") as metrics_cls:
+            DBMClient(Mock(), "datadoghq.com").query_scalar("body")
+
+        metrics_cls.return_value.query_scalar_data.assert_called_once_with("body")

@@ -1,5 +1,6 @@
 """Unified Datadog API client wrapper."""
 
+import json
 import os
 from datadog_api_client import ApiClient, Configuration
 from datadog_api_client.v1.api import (
@@ -26,66 +27,54 @@ from datadog_api_client.v2.api import (
     ci_visibility_pipelines_api,
     ci_visibility_tests_api,
 )
+from datadog_api_client.v2.api import metrics_api as metrics_api_v2
 from ddogctl.config import DatadogConfig
 
 
-class _Namespace:
-    """Simple namespace for attribute access on API response data."""
-
-    def __init__(self, data):
-        for key, value in data.items():
-            setattr(self, key, value)
-
-
-class _Response:
-    """Minimal response wrapper with a .data attribute."""
-
-    def __init__(self, data):
-        self.data = data
-
-
 class DBMClient:
-    """Lightweight wrapper for DBM API endpoints using direct HTTP calls."""
+    """Database Monitoring data access.
 
-    def __init__(self, api_client):
+    Datadog has no dedicated DBM API. Per Datadog's "Building applications with the
+    Database Monitoring API" guide, query metrics come from the v2 scalar metrics API,
+    and query samples / explain plans from the logs-analytics list endpoint on
+    app.<site>, which needs an unscoped application key.
+    """
+
+    def __init__(self, api_client, site):
         self._api_client = api_client
+        self._metrics = metrics_api_v2.MetricsApi(api_client)
+        self.app_url = f"https://app.{site}"
 
-    def _call(self, method, path, **query_params):
-        """Make a direct REST call through the SDK's ApiClient."""
-        params = {k: v for k, v in query_params.items() if v is not None}
+    def query_scalar(self, body):
+        return self._metrics.query_scalar_data(body)
+
+    def search_events(self, query, from_ms, to_ms, limit):
+        """Search the databasequery index (dbm_type:activity samples, dbm_type:plan plans)."""
         # call_api does not apply auth settings, so add the auth headers here.
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
         for setting in self._api_client.configuration.auth_settings().values():
             headers[setting["key"]] = setting["value"]
+        body = {
+            "list": {
+                "indexes": ["databasequery"],
+                "limit": limit,
+                "search": {"query": query},
+                "sorts": [{"time": {"order": "desc"}}],
+                "time": {"from": from_ms, "to": to_ms},
+            }
+        }
+        # Keyword args: positional ones once glued the method onto the host (#46, #50).
         response = self._api_client.call_api(
-            resource_path=path,
-            method=method,
-            query_params=params,
+            resource_path="/api/v1/logs-analytics/list",
+            method="POST",
+            query_params=[("type", "databasequery")],
             header_params=headers,
+            body=body,
+            host=self.app_url,
+            preload_content=False,
         )
-        import json
-
-        body = json.loads(response.response.data) if response.response.data else {}
-        data_raw = body.get("data", [])
-        if isinstance(data_raw, list):
-            return _Response(
-                [_Namespace(item) if isinstance(item, dict) else item for item in data_raw]
-            )
-        elif isinstance(data_raw, dict):
-            return _Response(_Namespace(data_raw))
-        return _Response(data_raw)
-
-    def list_hosts(self, **kwargs):
-        return self._call("GET", "/api/v2/dbm/hosts", **kwargs)
-
-    def list_queries(self, **kwargs):
-        return self._call("GET", "/api/v2/dbm/activity", **kwargs)
-
-    def get_query_plan(self, query_id, **kwargs):
-        return self._call("GET", f"/api/v2/dbm/query/{query_id}/plan", **kwargs)
-
-    def list_query_samples(self, query_id, **kwargs):
-        return self._call("GET", f"/api/v2/dbm/query/{query_id}/samples", **kwargs)
+        payload = json.loads(response.data) if response.data else {}
+        return payload.get("result", {}).get("events", [])
 
 
 class DatadogClient:
@@ -130,8 +119,8 @@ class DatadogClient:
         self.ci_pipelines = ci_visibility_pipelines_api.CIVisibilityPipelinesApi(self.api_client)
         self.ci_tests = ci_visibility_tests_api.CIVisibilityTestsApi(self.api_client)
 
-        # DBM (direct HTTP — no dedicated SDK module)
-        self.dbm = DBMClient(self.api_client)
+        # DBM (no dedicated SDK module: scalar metrics + logs-analytics)
+        self.dbm = DBMClient(self.api_client, config.site)
 
     def __enter__(self):
         return self
