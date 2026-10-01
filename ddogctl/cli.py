@@ -36,7 +36,7 @@ class AliasGroup(click.Group):
 
 
 @click.group(cls=AliasGroup)
-@click.version_option(version="2.2.0")
+@click.version_option(version="2.3.0")
 @click.option(
     "--profile",
     default=None,
