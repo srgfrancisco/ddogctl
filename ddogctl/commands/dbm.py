@@ -88,6 +88,15 @@ def _scope(tags):
     return "{" + ",".join(tags) + "}" if tags else "{*}"
 
 
+def _count_query(metric, scope, group_by):
+    """Sum a DBM count metric per group over the whole time range.
+
+    The per-query metrics are count type: without .as_count() the scalar API
+    interpolates sparse series, inflating low-volume groups unpredictably.
+    """
+    return f"sum:{metric}{scope} by {{{group_by}}}.as_count()"
+
+
 def _query_scalar(client, queries, formulas, sort_formula, limit, from_ts, to_ts):
     """Run a scalar metrics query and return one dict per group, ranked by sort_formula.
 
@@ -181,8 +190,8 @@ def list_hosts(engine, env, from_time, to_time, limit, format):
         for name in _engines(engine):
             prefix = ENGINES[name]["prefix"]
             queries = {
-                "calls": f"sum:{prefix}.count{scope} by {{host}}",
-                "total_time": f"sum:{prefix}.time{scope} by {{host}}",
+                "calls": _count_query(f"{prefix}.count", scope, "host"),
+                "total_time": _count_query(f"{prefix}.time", scope, "host"),
             }
             formulas = ["calls", "total_time", SORT_FORMULAS["avg_latency"]]
             rows = _query_scalar(client, queries, formulas, "calls", limit, from_ts, to_ts)
@@ -209,28 +218,63 @@ def list_hosts(engine, env, from_time, to_time, limit, format):
         )
         return
 
-    table = Table(title="Database Hosts")
-    table.add_column("Host", style="cyan")
-    table.add_column("Engine", style="white")
-    table.add_column("Calls", justify="right", style="yellow")
-    table.add_column("Total Time (ms)", justify="right", style="yellow")
-    table.add_column("Avg Latency (ms)", justify="right", style="yellow")
+    table = _table("Database Hosts")
+    table.add_column("Host", style="cyan", ratio=1, no_wrap=True, overflow="ellipsis")
+    table.add_column("Engine", style="white", no_wrap=True)
+    for header in ("Calls", "Total Time", "Avg Latency"):
+        _number_column(table, header)
 
     for h in hosts:
         table.add_row(
             escape(str(h["host"])),
             h["engine"],
-            f"{h['calls']:,}",
-            _fmt(h["total_time_ms"]),
-            _fmt(h["avg_latency_ms"]),
+            _count_text(h["calls"]),
+            _duration_text(h["total_time_ms"]),
+            _duration_text(h["avg_latency_ms"]),
         )
 
     console.print(table)
     console.print(f"\n[dim]Total hosts: {len(hosts)}[/dim]")
 
 
-def _fmt(value):
-    return "-" if value is None else f"{value:,.2f}"
+def _table(title):
+    # expand=True is what makes Rich honor ratio= on the one flexible text column.
+    return Table(title=title, expand=True)
+
+
+def _number_column(table, header):
+    table.add_column(header, justify="right", style="yellow", no_wrap=True)
+
+
+def _duration_text(ms):
+    """Compact duration for tables, e.g. 0.12ms, 11.6s, 17.1m, 285.6h (JSON keeps ms)."""
+    if ms is None:
+        return "-"
+    if ms < 1000:
+        return f"{ms:.2f}ms"
+    seconds = ms / 1000
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f}m"
+    return f"{seconds / 3600:,.1f}h"
+
+
+def _count_text(n):
+    """Compact count for tables, e.g. 9,999, 65.1k, 8.38M (JSON keeps exact values)."""
+    if n < 10_000:
+        return f"{n:,}"
+    if n < 1_000_000:
+        return f"{n / 1000:.1f}k"
+    if n < 1_000_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    return f"{n / 1_000_000_000:.2f}B"
+
+
+def _ratio_text(value):
+    if value is None:
+        return "-"
+    return f"{value:.2f}" if value < 10_000 else _count_text(round(value))
 
 
 def _query_row(row, engine):
@@ -315,7 +359,7 @@ def list_queries(
             scope = _scope(filters)
 
             queries = {
-                f: f"sum:{spec['prefix']}.{METRICS[f]}{scope} by {{query_signature,query}}"
+                f: _count_query(f"{spec['prefix']}.{METRICS[f]}", scope, "query_signature,query")
                 for f in ["calls", "total_time", *spec["extra"]]
             }
             formulas = ["calls", "total_time", SORT_FORMULAS["avg_latency"]]
@@ -336,30 +380,31 @@ def list_queries(
         console.print("[yellow]No DBM query metrics found in this time range.[/yellow]")
         return
 
-    table = Table(title=f"Top Queries ({used_engine}, by {sort_by})")
+    # Query is the only column allowed to shrink; signatures feed `dbm samples`/`explain`
+    # and numbers are compacted so all of them fit in an 80-column terminal.
+    table = _table(f"Top Queries ({used_engine}, by {sort_by})")
     table.add_column("Signature", style="cyan", no_wrap=True)
-    table.add_column("Query", style="white", max_width=60, no_wrap=True, overflow="ellipsis")
-    table.add_column("Calls", justify="right", style="yellow")
-    table.add_column("Total (ms)", justify="right", style="yellow")
-    table.add_column("Avg (ms)", justify="right", style="yellow")
+    table.add_column("Query", style="white", ratio=1, no_wrap=True, overflow="ellipsis")
+    for header in ("Calls", "Total", "Avg"):
+        _number_column(table, header)
     if used_engine == "mysql":
-        table.add_column("Lock (ms)", justify="right", style="yellow")
-        table.add_column("Rows exam./call", justify="right", style="yellow")
+        _number_column(table, "Lock")
+        _number_column(table, "Exam/call")
     else:
-        table.add_column("Rows/call", justify="right", style="yellow")
+        _number_column(table, "Rows/call")
 
     for q in results:
         cells = [
             escape(str(q["query_signature"])),
             escape(str(q["query"])),
-            f"{q['calls']:,}",
-            _fmt(q["total_time_ms"]),
-            _fmt(q["avg_latency_ms"]),
+            _count_text(q["calls"]),
+            _duration_text(q["total_time_ms"]),
+            _duration_text(q["avg_latency_ms"]),
         ]
         if used_engine == "mysql":
-            cells += [_fmt(q["lock_time_ms"]), _fmt(q["avg_rows_examined"])]
+            cells += [_duration_text(q["lock_time_ms"]), _ratio_text(q["avg_rows_examined"])]
         else:
-            cells.append(_fmt(q["avg_rows"]))
+            cells.append(_ratio_text(q["avg_rows"]))
         table.add_row(*cells)
 
     console.print(table)
@@ -437,12 +482,14 @@ def list_samples(query_signature, from_time, to_time, host, service, env, limit,
         console.print("[yellow]No query samples found in this time range.[/yellow]")
         return
 
-    table = Table(title="Query Samples")
+    table = _table("Query Samples")
     table.add_column("Time", style="cyan", no_wrap=True)
     table.add_column("Host", style="white")
-    table.add_column("Rows", justify="right", style="yellow")
+    table.add_column("Rows", justify="right", style="yellow", no_wrap=True)
     table.add_column("Wait Event", style="magenta")
-    table.add_column("Statement", style="white", max_width=60, no_wrap=True, overflow="ellipsis")
+    table.add_column(
+        "Statement", style="white", ratio=1, min_width=20, no_wrap=True, overflow="ellipsis"
+    )
 
     for event in events:
         db = _db(event)
