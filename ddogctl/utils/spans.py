@@ -1,4 +1,9 @@
-"""Spans API helper for aggregate_spans wrapper."""
+"""Spans API helpers: aggregation, paginated search, and span field access."""
+
+from datetime import date, datetime
+
+# Spans list API caps page[limit] at 1000.
+MAX_PAGE_LIMIT = 1000
 
 
 def aggregate_spans(client, filter_dict, compute_list, group_by_list=None):
@@ -55,3 +60,84 @@ def aggregate_spans(client, filter_dict, compute_list, group_by_list=None):
             self.data = NormalizedData(buckets)
 
     return NormalizedResponse([NormalizedBucket(b) for b in raw_buckets])
+
+
+def search_spans(client, query, from_str, to_str, limit, sort="-timestamp"):
+    """Search spans, following cursor pagination until `limit` spans are collected.
+
+    Returns:
+        (spans, truncated) where truncated is True if more results were available.
+    """
+    from datadog_api_client.v2.model.spans_sort import SpansSort
+
+    spans: list = []
+    cursor = None
+    while len(spans) < limit:
+        kwargs = {
+            "filter_query": query,
+            "filter_from": from_str,
+            "filter_to": to_str,
+            "sort": SpansSort(sort),
+            "page_limit": min(limit - len(spans), MAX_PAGE_LIMIT),
+        }
+        if cursor:
+            kwargs["page_cursor"] = cursor
+        response = client.spans.list_spans_get(**kwargs)
+        spans.extend(getattr(response, "data", None) or [])
+        cursor = _next_cursor(response)
+        if not cursor:
+            return spans[:limit], False
+    return spans[:limit], True
+
+
+def _next_cursor(response):
+    meta = getattr(response, "meta", None)
+    page = getattr(meta, "page", None) if meta else None
+    return getattr(page, "after", None) if page else None
+
+
+def span_to_dict(span):
+    """Convert a Span to a JSON-serializable dict with every attribute plus duration_ms."""
+    attrs = span.attributes.to_dict()
+    for key, value in attrs.items():
+        if isinstance(value, (datetime, date)):
+            attrs[key] = value.isoformat()
+    attrs["duration_ms"] = span_duration_ms(span)
+    return attrs
+
+
+def span_duration_ms(span):
+    """Span duration in milliseconds.
+
+    The API reports duration in nanoseconds under `custom.duration`; SpansAttributes has
+    no top-level `duration`. Falls back to end - start timestamps.
+    """
+    attrs = span.attributes
+    custom = getattr(attrs, "custom", None) or {}
+    duration_ns = custom.get("duration") if isinstance(custom, dict) else None
+    if isinstance(duration_ns, (int, float)):
+        return round(duration_ns / 1_000_000, 2)
+    start = getattr(attrs, "start_timestamp", None)
+    end = getattr(attrs, "end_timestamp", None)
+    if isinstance(start, datetime) and isinstance(end, datetime):
+        return round((end - start).total_seconds() * 1000, 2)
+    return 0.0
+
+
+def get_span_field(span_dict, field):
+    """Look up a field in a span dict.
+
+    `@a.b` resolves to custom attributes (custom["a"]["b"]); anything else is a top-level
+    attribute such as `trace_id` or `env`.
+    """
+    if field.startswith("@"):
+        value = span_dict.get("custom") or {}
+        path = field[1:].split(".")
+    else:
+        value = span_dict
+        path = [field]
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return None
+        value = value[key]
+    return value

@@ -47,7 +47,7 @@ ddogctl monitor      {list, get, create, update, delete, mute, unmute, validate,
 ddogctl metric       {query, search, metadata}
 ddogctl event        {list, get, post}
 ddogctl host         {list, get, totals}
-ddogctl apm          {services, traces, analytics}
+ddogctl apm          {services, traces, analytics, spans search, trace}
 ddogctl logs         {search, tail, query, trace}
 ddogctl dbm          {hosts, queries, explain, samples}
 ddogctl investigate  {latency, errors, throughput, compare}
@@ -115,7 +115,7 @@ Strict TDD (RED-GREEN-REFACTOR). Coverage target >90%. Reference implementation:
 - The `claude-review` CI check can take 5-17 minutes. Wait for it before merging.
 - Worktrees: run `uv sync --all-extras` after creation; remove with `git worktree remove --force <path>` (the `--force` is needed because `uv sync` creates untracked `.venv` files); use `gh pr merge --squash` without `--delete-branch` if the worktree still references the branch.
 - `git remote prune origin` cleans stale remote tracking refs after branch deletion.
-- `datadog_api_client` SDK field names: verify against the model's `openapi_types` before reading/writing — e.g. v2 incidents use `state` (not `status`) on `IncidentResponseAttributes`, and lifecycle changes flow through `fields["state"]` (dropdown), not a top-level attribute. `getattr(obj, "wrong_name", "")` will silently return `""` forever.
+- `datadog_api_client` SDK field names: verify against the model's `openapi_types` before reading/writing — e.g. v2 incidents use `state` (not `status`) on `IncidentResponseAttributes`, and lifecycle changes flow through `fields["state"]` (dropdown), not a top-level attribute. `getattr(obj, "wrong_name", "")` will silently return `""` forever. Spans have no `duration` attribute: it's nanoseconds under `attributes.custom["duration"]` — use `span_duration_ms()` in `utils/spans.py`. Prefer real SDK models over Mocks in tests (see `tests/commands/test_apm_spans.py`).
 
 ## Releasing
 

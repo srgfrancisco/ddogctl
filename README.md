@@ -100,6 +100,9 @@ ddogctl host info web-prod-01
 # APM
 ddogctl apm services
 ddogctl apm traces my-service --from 1h
+ddogctl apm spans search "service:worker @job.name:SyncJob" --field @messaging.destination
+ddogctl apm spans search "service:mysql @duration:>1s" --format json   # full span: parent_id, tags, custom attrs
+ddogctl apm trace 5501770330737245996                                  # span tree + root span
 
 # Logs
 ddogctl logs search "status:error" --service my-api --from 30m
