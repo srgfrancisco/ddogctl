@@ -7,7 +7,7 @@
 - Rich terminal output with tables, colors, and progress bars
 - APM trace search and service listing
 - Log querying with trace correlation
-- Database monitoring (DBM) for slow queries and execution plans
+- Database monitoring (DBM) for top queries, query samples, and explain plans
 - Investigation workflows that correlate across monitors, traces, logs, and hosts
 - Retry logic with exponential backoff
 - Region shortcuts (`us`, `eu`, `us3`, `us5`, `ap1`, `gov`)
@@ -67,6 +67,15 @@ ddogctl config set-profile work --pat ddpat_... --site eu
 A `ddpat_` value in `DD_APP_KEY` is detected as a PAT too. Commands that send data to Datadog
 (`event post`, `service-check post`) still need `DD_API_KEY` alongside the PAT.
 
+### Database Monitoring access
+
+`dbm hosts` and `dbm queries` read the Agent's per-query metrics (`mysql.queries.*`,
+`postgresql.queries.*`), so any credentials that can query metrics work, PATs included.
+`dbm samples` and `dbm explain` read query samples and explain plans through the endpoint in
+Datadog's [DBM API guide](https://docs.datadoghq.com/database_monitoring/guide/build_apps_with_dbm_api/),
+which requires `DD_API_KEY` plus an **unscoped** application key. PATs and scoped keys may be
+rejected with a 403.
+
 ### Region Shortcuts
 
 | Shortcut | Site |
@@ -108,9 +117,12 @@ ddogctl apm trace 5501770330737245996                                  # span tr
 ddogctl logs search "status:error" --service my-api --from 30m
 ddogctl logs tail "env:prod" --follow
 
-# Database Monitoring
-ddogctl dbm slow-queries --service postgres-prod --from 1h
-ddogctl dbm explain "SELECT * FROM users WHERE id = 1"
+# Database Monitoring (MySQL, Postgres)
+ddogctl dbm hosts --from 24h
+ddogctl dbm queries --host db-prod-01 --sort-by avg_latency --from 4h
+ddogctl dbm queries --engine mysql --database shop --sort-by lock_time
+ddogctl dbm samples 558c51ab1be9812b --limit 20    # needs an unscoped app key
+ddogctl dbm explain 558c51ab1be9812b              # needs an unscoped app key
 
 # Investigation Workflows
 ddogctl investigate service my-api --from 1h

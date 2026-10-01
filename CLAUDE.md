@@ -91,7 +91,7 @@ ddogctl completion   {bash, zsh, fish}
 Tests use `unittest.mock` with Click's `CliRunner`. Key fixtures from `tests/conftest.py`:
 - `mock_client` — Mock with all API attributes (`.monitors`, `.hosts`, `.metrics`, `.events`, `.spans`, `.logs`, `.dbm`, `.service_definitions`, `.service_checks`, `.downtimes`, `.slos`, `.dashboards`, `.incidents`, `.users`, `.usage`, `.synthetics`, `.rum`, `.ci_pipelines`, `.ci_tests`, `.notebooks`)
 - `runner` — `CliRunner()` instance
-- Factory functions: `create_mock_monitor()`, `create_mock_host()`, `create_mock_span()`, `create_mock_log()`, `create_mock_dbm_host()`, `create_mock_dbm_query()`, `create_mock_dbm_sample()`, `create_mock_service_list()`, `create_mock_rum_event()`
+- Factory functions: `create_mock_monitor()`, `create_mock_host()`, `create_mock_span()`, `create_mock_log()`, `create_mock_service_list()`, `create_mock_rum_event()`
 
 Standard test pattern: patch `get_datadog_client` to return `mock_client`, invoke command via `runner`, assert on output and exit code.
 - **Mock attribute limiting**: Use `Mock(spec_set=["attr1", "attr2"])` to limit attributes — `del mock.attr` doesn't work, Mock returns a new Mock for any attribute access. For SDK response mocks, the `spec_set` list MUST match the real SDK attribute names (check `openapi_types`); otherwise a typo like `Mock(status=...)` against an SDK that exposes `state` will pass tests but fail in production.
@@ -115,6 +115,7 @@ Strict TDD (RED-GREEN-REFACTOR). Coverage target >90%. Reference implementation:
 - The `claude-review` CI check can take 5-17 minutes. Wait for it before merging.
 - Worktrees: run `uv sync --all-extras` after creation; remove with `git worktree remove --force <path>` (the `--force` is needed because `uv sync` creates untracked `.venv` files); use `gh pr merge --squash` without `--delete-branch` if the worktree still references the branch.
 - `git remote prune origin` cleans stale remote tracking refs after branch deletion.
+- DBM has no SDK module and no `/api/v2/dbm/*` endpoints (they 404). `DBMClient` follows Datadog's "Building applications with the DBM API" guide: query metrics via the v2 scalar API (`mysql.queries.*` tagged `schema`, `postgresql.queries.*` tagged `db`; times in ns), samples/plans via `POST app.<site>/api/v1/logs-analytics/list?type=databasequery`, which 403s for PATs/scoped keys lacking access. Scalar results can include an `_other` group when a formula has a `limit`; filter it out.
 - `datadog_api_client` SDK field names: verify against the model's `openapi_types` before reading/writing — e.g. v2 incidents use `state` (not `status`) on `IncidentResponseAttributes`, and lifecycle changes flow through `fields["state"]` (dropdown), not a top-level attribute. `getattr(obj, "wrong_name", "")` will silently return `""` forever. Spans have no `duration` attribute: it's nanoseconds under `attributes.custom["duration"]` — use `span_duration_ms()` in `utils/spans.py`. Prefer real SDK models over Mocks in tests (see `tests/commands/test_apm_spans.py`).
 
 ## Releasing
