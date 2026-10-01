@@ -75,17 +75,36 @@ def config():
     pass
 
 
+def build_profile(
+    site: str, api_key: str | None = None, app_key: str | None = None, pat: str | None = None
+) -> dict:
+    """Build a profile dict, omitting credentials that weren't provided."""
+    profile = {"pat": pat, "api_key": api_key, "app_key": app_key}
+    return {**{k: v for k, v in profile.items() if v}, "site": site}
+
+
 @config.command(name="init")
-def init_config():
+@click.option(
+    "--auth",
+    type=click.Choice(["keys", "pat"]),
+    default="keys",
+    show_default=True,
+    help="Authenticate with an API+App key pair or a Personal Access Token",
+)
+def init_config(auth):
     """Interactive setup wizard to create a profile.
 
-    Prompts for API key, app key, site, and profile name, then saves
+    Prompts for credentials, site, and profile name, then saves
     to ~/.ddogctl/config.json.
     """
     console.print("[cyan]Datadog CLI Configuration Wizard[/cyan]\n")
 
-    api_key = click.prompt("API Key", hide_input=True)
-    app_key = click.prompt("App Key", hide_input=True)
+    pat = api_key = app_key = None
+    if auth == "pat":
+        pat = click.prompt("Personal Access Token", hide_input=True)
+    else:
+        api_key = click.prompt("API Key", hide_input=True)
+        app_key = click.prompt("App Key", hide_input=True)
     site = click.prompt("Site (us, eu, us3, us5, ap1, gov, or full domain)", default="us")
     profile_name = click.prompt("Profile name", default="default")
 
@@ -96,11 +115,7 @@ def init_config():
     if not data:
         data = {"active_profile": "", "profiles": {}}
 
-    data["profiles"][profile_name] = {
-        "api_key": api_key,
-        "app_key": app_key,
-        "site": site,
-    }
+    data["profiles"][profile_name] = build_profile(site, api_key, app_key, pat)
 
     # Set as active if no active profile
     if not data["active_profile"]:
@@ -114,26 +129,29 @@ def init_config():
 
 @config.command(name="set-profile")
 @click.argument("name")
-@click.option("--api-key", required=True, help="Datadog API key")
-@click.option("--app-key", required=True, help="Datadog Application key")
+@click.option("--api-key", help="Datadog API key")
+@click.option("--app-key", help="Datadog Application key")
+@click.option("--pat", help="Datadog Personal Access Token (replaces --app-key)")
 @click.option("--site", default="us", help="Datadog site (us, eu, us3, us5, ap1, gov, or domain)")
-def set_profile(name, api_key, app_key, site):
+def set_profile(name, api_key, app_key, pat, site):
     """Create or update a profile.
+
+    Requires --pat, or both --api-key and --app-key.
 
     Example:
         ddogctl config set-profile prod --api-key xxx --app-key yyy --site us
+        ddogctl config set-profile work --pat ddpat_xxx --site eu
     """
+    if not pat and not (api_key and app_key):
+        raise click.UsageError("Provide --pat, or both --api-key and --app-key")
+
     site = expand_site(site)
 
     data = load_config_data()
     if not data:
         data = {"active_profile": "", "profiles": {}}
 
-    data["profiles"][name] = {
-        "api_key": api_key,
-        "app_key": app_key,
-        "site": site,
-    }
+    data["profiles"][name] = build_profile(site, api_key, app_key, pat)
 
     # Set as active if it's the first profile or no active profile
     if not data["active_profile"]:
@@ -189,6 +207,7 @@ def list_profiles():
     table.add_column("Name", style="cyan")
     table.add_column("API Key", style="dim")
     table.add_column("App Key", style="dim")
+    table.add_column("PAT", style="dim")
     table.add_column("Site", style="white")
 
     for name, profile in sorted(data["profiles"].items()):
@@ -198,6 +217,7 @@ def list_profiles():
             name,
             mask_key(profile.get("api_key", "")),
             mask_key(profile.get("app_key", "")),
+            mask_key(profile["pat"]) if profile.get("pat") else "",
             profile.get("site", ""),
         )
 
@@ -210,13 +230,13 @@ def list_profiles():
 def get_value(key):
     """Show the current value for a configuration key.
 
-    Valid keys: active_profile, api_key, app_key, site
+    Valid keys: active_profile, api_key, app_key, pat, site
 
     Example:
         ddogctl config get site
         ddogctl config get active_profile
     """
-    valid_keys = {"active_profile", "api_key", "app_key", "site"}
+    valid_keys = {"active_profile", "api_key", "app_key", "pat", "site"}
 
     if key not in valid_keys:
         console.print(
@@ -245,7 +265,7 @@ def get_value(key):
     value = profile.get(key, "")
 
     # Mask sensitive keys
-    if key in ("api_key", "app_key"):
+    if key in ("api_key", "app_key", "pat"):
         value = mask_key(value)
 
     console.print(value)

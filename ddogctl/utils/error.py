@@ -37,7 +37,7 @@ def handle_api_error(func):
                         "AUTH_FAILED",
                         401,
                         "Authentication failed",
-                        "Check DD_API_KEY and DD_APP_KEY or run ddogctl config init",
+                        "Check DD_PAT (expired?) or DD_API_KEY and DD_APP_KEY, or run ddogctl config init",
                     )
                     sys.exit(AUTH_ERROR)
                 elif e.status == 403:
@@ -45,7 +45,7 @@ def handle_api_error(func):
                         "PERMISSION_DENIED",
                         403,
                         "Permission denied",
-                        "Check API key permissions",
+                        "Check key or PAT scopes; intake endpoints (event post, service-check post) need DD_API_KEY",
                     )
                     sys.exit(AUTH_ERROR)
                 elif e.status == 404:

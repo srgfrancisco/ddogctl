@@ -52,6 +52,21 @@ export DD_APP_KEY="your-app-key"
 export DD_SITE="us"  # optional, defaults to datadoghq.com
 ```
 
+### Personal Access Tokens
+
+ddogctl also accepts a Datadog [Personal Access Token](https://docs.datadoghq.com/account_management/personal-access-tokens/) (PAT).
+A PAT is scoped to your user and expires, so you don't need an API key for most commands:
+
+```bash
+export DD_PAT="ddpat_..."
+# or save it in a profile
+ddogctl config init --auth pat
+ddogctl config set-profile work --pat ddpat_... --site eu
+```
+
+A `ddpat_` value in `DD_APP_KEY` is detected as a PAT too. Commands that send data to Datadog
+(`event post`, `service-check post`) still need `DD_API_KEY` alongside the PAT.
+
 ### Region Shortcuts
 
 | Shortcut | Site |

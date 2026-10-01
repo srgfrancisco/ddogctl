@@ -253,3 +253,34 @@ class TestProfileFlagIntegration:
         result = runner.invoke(main, ["--help"])
         assert result.exit_code == 0
         assert "--profile" in result.output
+
+
+class TestLoadConfigWithPatProfiles:
+    """Tests for PAT support in profiles."""
+
+    def _write(self, tmp_path, profile):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            json.dumps({"active_profile": "work", "profiles": {"work": profile}})
+        )
+        return config_file
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_loads_pat_from_profile(self, tmp_path):
+        config_file = self._write(tmp_path, {"pat": "ddpat_profile", "site": "datadoghq.eu"})
+
+        with patch("ddogctl.config.get_config_path", return_value=str(config_file)):
+            config = load_config()
+
+        assert config.pat == "ddpat_profile"
+        assert config.site == "datadoghq.eu"
+        assert config.auth_mode == "pat"
+
+    @patch.dict("os.environ", {"DD_PAT": "ddpat_env"}, clear=True)
+    def test_env_pat_overrides_profile(self, tmp_path):
+        config_file = self._write(tmp_path, {"pat": "ddpat_profile"})
+
+        with patch("ddogctl.config.get_config_path", return_value=str(config_file)):
+            config = load_config()
+
+        assert config.pat == "ddpat_env"

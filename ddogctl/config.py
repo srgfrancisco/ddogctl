@@ -2,13 +2,17 @@
 
 import json
 import os
+from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import sys
 from rich.console import Console
 
 console = Console()
+
+
+PAT_PREFIX = "ddpat_"
 
 
 def get_config_path() -> str:
@@ -19,8 +23,9 @@ def get_config_path() -> str:
 class DatadogConfig(BaseSettings):
     """Datadog configuration from environment variables."""
 
-    api_key: str = Field(..., alias="DD_API_KEY")
-    app_key: str = Field(..., alias="DD_APP_KEY")
+    api_key: str | None = Field(default=None, alias="DD_API_KEY")
+    app_key: str | None = Field(default=None, alias="DD_APP_KEY")
+    pat: str | None = Field(default=None, alias="DD_PAT")
     site: str = Field(default="datadoghq.com", alias="DD_SITE")
 
     # Client settings
@@ -54,6 +59,20 @@ class DatadogConfig(BaseSettings):
             "gov": "ddog-gov.com",
         }
         return regions.get(v.lower(), v)
+
+    @model_validator(mode="after")
+    def check_credentials(self) -> "DatadogConfig":
+        """Require a PAT or an API+App key pair; detect PATs passed as the app key."""
+        if not self.pat and self.app_key and self.app_key.startswith(PAT_PREFIX):
+            self.pat, self.app_key = self.app_key, None
+        if not self.pat and not (self.api_key and self.app_key):
+            raise ValueError("Set DD_PAT, or both DD_API_KEY and DD_APP_KEY")
+        return self
+
+    @property
+    def auth_mode(self) -> str:
+        """Return 'pat' when authenticating with a Personal Access Token, else 'keys'."""
+        return "pat" if self.pat else "keys"
 
 
 def _load_profile_data(profile: str | None = None) -> dict | None:
@@ -114,9 +133,12 @@ def load_config(profile: str | None = None) -> DatadogConfig:
 
     if profile_data:
         # Use profile data as base, let env vars override
-        kwargs = {}
-        kwargs["DD_API_KEY"] = os.environ.get("DD_API_KEY", profile_data.get("api_key", ""))
-        kwargs["DD_APP_KEY"] = os.environ.get("DD_APP_KEY", profile_data.get("app_key", ""))
+        kwargs: dict[str, Any] = {}
+        kwargs["DD_API_KEY"] = os.environ.get("DD_API_KEY", profile_data.get("api_key"))
+        kwargs["DD_APP_KEY"] = os.environ.get("DD_APP_KEY", profile_data.get("app_key"))
+        pat = os.environ.get("DD_PAT", profile_data.get("pat"))
+        if pat:
+            kwargs["DD_PAT"] = pat
         kwargs["DD_SITE"] = os.environ.get("DD_SITE", profile_data.get("site", "datadoghq.com"))
 
         try:
@@ -137,9 +159,9 @@ def load_config(profile: str | None = None) -> DatadogConfig:
 
 def _print_config_help() -> None:
     """Print configuration help text."""
-    console.print("\n[yellow]Required environment variables:[/yellow]")
-    console.print("  - DD_API_KEY")
-    console.print("  - DD_APP_KEY")
+    console.print("\n[yellow]Required environment variables (one of):[/yellow]")
+    console.print("  - DD_PAT (Personal Access Token, ddpat_...)")
+    console.print("  - DD_API_KEY and DD_APP_KEY")
     console.print("  - DD_SITE (optional, defaults to datadoghq.com)")
     console.print("\n[yellow]Supported regions:[/yellow] us, eu, us3, us5, ap1, gov")
     console.print("\n[dim]Or configure a profile: ddogctl config init[/dim]")

@@ -227,3 +227,49 @@ class TestConfigExtraFields:
         assert config.api_key == "test_api_key"
         assert config.app_key == "test_app_key"
         assert not hasattr(config, "unknown_field")
+
+
+class TestPersonalAccessToken:
+    """Tests for Personal Access Token (PAT) auth."""
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_pat_alone_is_valid(self):
+        config = DatadogConfig(_env_file=None, DD_PAT="ddpat_abc_secret")
+
+        assert config.pat == "ddpat_abc_secret"
+        assert config.api_key is None
+        assert config.auth_mode == "pat"
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_pat_in_app_key_is_detected(self):
+        config = DatadogConfig(_env_file=None, DD_APP_KEY="ddpat_abc_secret")
+
+        assert config.pat == "ddpat_abc_secret"
+        assert config.app_key is None
+        assert config.auth_mode == "pat"
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_pat_with_api_key_keeps_api_key(self):
+        config = DatadogConfig(_env_file=None, DD_PAT="ddpat_abc_secret", DD_API_KEY="api")
+
+        assert config.api_key == "api"
+        assert config.auth_mode == "pat"
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_keys_mode(self):
+        config = DatadogConfig(_env_file=None, DD_API_KEY="api", DD_APP_KEY="app")
+
+        assert config.auth_mode == "keys"
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_no_credentials_raises(self):
+        with pytest.raises(ValidationError) as exc_info:
+            DatadogConfig(_env_file=None)
+
+        assert "DD_PAT" in str(exc_info.value)
+
+    @patch.dict("os.environ", {"DD_PAT": "ddpat_env_secret"}, clear=True)
+    def test_load_config_from_pat_env(self):
+        config = load_config()
+
+        assert config.pat == "ddpat_env_secret"
