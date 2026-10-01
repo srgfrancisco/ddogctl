@@ -113,9 +113,9 @@ def test_hosts_queries_dbm_metrics_by_host(mock_client, runner):
     ]
     mysql_queries, _ = sent_request(mock_client, 0)
     pg_queries, _ = sent_request(mock_client, 1)
-    assert mysql_queries["calls"] == "sum:mysql.queries.count{*} by {host}"
-    assert mysql_queries["total_time"] == "sum:mysql.queries.time{*} by {host}"
-    assert pg_queries["calls"] == "sum:postgresql.queries.count{*} by {host}"
+    assert mysql_queries["calls"] == "sum:mysql.queries.count{*} by {host}.as_count()"
+    assert mysql_queries["total_time"] == "sum:mysql.queries.time{*} by {host}.as_count()"
+    assert pg_queries["calls"] == "sum:postgresql.queries.count{*} by {host}.as_count()"
 
 
 def test_hosts_merges_engines_sorted_by_calls(mock_client, runner):
@@ -145,7 +145,7 @@ def test_hosts_env_and_engine_filters(mock_client, runner):
     assert result.exit_code == 0, result.output
     assert mock_client.dbm.query_scalar.call_count == 1
     queries, _ = sent_request(mock_client)
-    assert queries["calls"] == "sum:postgresql.queries.count{env:prod} by {host}"
+    assert queries["calls"] == "sum:postgresql.queries.count{env:prod} by {host}.as_count()"
 
 
 def test_hosts_sends_time_range_in_ms_and_ranks_server_side(mock_client, runner):
@@ -246,6 +246,36 @@ def test_queries_json_output_mysql(mock_client, runner):
     ]
 
 
+def test_every_metric_query_uses_as_count(mock_client, runner):
+    """mysql.queries.* / postgresql.queries.* are count metrics. Without .as_count(), a
+    broad scalar query interpolates sparse series: a signature with 429 calls came back
+    as ~1027, and differed between runs."""
+    mock_client.dbm.query_scalar.return_value = empty_response()
+    commands = [["hosts", "--engine", engine] for engine in ("mysql", "postgres")]
+    commands += [["queries", "--engine", "mysql", "--sort-by", "lock_time"]]
+    commands += [["queries", "--engine", "postgres", "--sort-by", "rows"]]
+
+    sent = []
+    for args in commands:
+        mock_client.dbm.query_scalar.reset_mock()
+        result = invoke(runner, mock_client, args)
+        assert result.exit_code == 0, result.output
+        queries, _ = sent_request(mock_client)
+        sent.extend(queries.values())
+
+    metrics = {q.split("{")[0].removeprefix("sum:") for q in sent}
+    assert metrics == {
+        "mysql.queries.count",
+        "mysql.queries.time",
+        "mysql.queries.lock_time",
+        "mysql.queries.rows_examined",
+        "postgresql.queries.count",
+        "postgresql.queries.time",
+        "postgresql.queries.rows",
+    }
+    assert all(q.endswith(".as_count()") for q in sent), sent
+
+
 def test_queries_builds_metric_queries_grouped_by_signature(mock_client, runner):
     mock_client.dbm.query_scalar.return_value = mysql_queries_response()
 
@@ -254,10 +284,10 @@ def test_queries_builds_metric_queries_grouped_by_signature(mock_client, runner)
     assert result.exit_code == 0, result.output
     queries, _ = sent_request(mock_client)
     assert queries == {
-        "calls": "sum:mysql.queries.count{*} by {query_signature,query}",
-        "total_time": "sum:mysql.queries.time{*} by {query_signature,query}",
-        "lock_time": "sum:mysql.queries.lock_time{*} by {query_signature,query}",
-        "rows_examined": "sum:mysql.queries.rows_examined{*} by {query_signature,query}",
+        "calls": "sum:mysql.queries.count{*} by {query_signature,query}.as_count()",
+        "total_time": "sum:mysql.queries.time{*} by {query_signature,query}.as_count()",
+        "lock_time": "sum:mysql.queries.lock_time{*} by {query_signature,query}.as_count()",
+        "rows_examined": "sum:mysql.queries.rows_examined{*} by {query_signature,query}.as_count()",
     }
 
 
@@ -271,7 +301,10 @@ def test_queries_filters_map_to_tags(mock_client, runner):
     assert result.exit_code == 0, result.output
     queries, _ = sent_request(mock_client)
     scope = "{host:db-1,schema:shop,service:api,env:prod,team:core}"
-    assert queries["calls"] == f"sum:mysql.queries.count{scope} by {{query_signature,query}}"
+    assert (
+        queries["calls"]
+        == f"sum:mysql.queries.count{scope} by {{query_signature,query}}.as_count()"
+    )
 
 
 def test_queries_postgres_uses_db_tag_and_rows_metric(mock_client, runner):
@@ -283,9 +316,9 @@ def test_queries_postgres_uses_db_tag_and_rows_metric(mock_client, runner):
     assert result.exit_code == 0, result.output
     queries, formulas = sent_request(mock_client)
     assert queries == {
-        "calls": "sum:postgresql.queries.count{db:shop} by {query_signature,query}",
-        "total_time": "sum:postgresql.queries.time{db:shop} by {query_signature,query}",
-        "rows": "sum:postgresql.queries.rows{db:shop} by {query_signature,query}",
+        "calls": "sum:postgresql.queries.count{db:shop} by {query_signature,query}.as_count()",
+        "total_time": "sum:postgresql.queries.time{db:shop} by {query_signature,query}.as_count()",
+        "rows": "sum:postgresql.queries.rows{db:shop} by {query_signature,query}.as_count()",
     }
     assert [f.formula for f in formulas if "limit" in f] == ["rows"]
 
@@ -418,8 +451,55 @@ def test_queries_table_output(mock_client, runner):
     assert result.exit_code == 0, result.output
     assert "sig-a" in result.output
     assert "SELECT * FROM users" in result.output
-    assert "Lock (ms)" in result.output
+    assert "Lock" in result.output
+    assert "Exam/call" in result.output
     assert "Total queries: 2" in result.output
+
+
+def test_queries_table_keeps_numbers_visible_at_80_columns(mock_client, runner):
+    """Only the Query column may shrink in a default-width terminal; signatures and numbers
+    (at production magnitudes) must stay whole."""
+    mock_client.dbm.query_scalar.return_value = scalar_response(
+        {
+            "query_signature": ["a448e2e9bcae4067"],
+            "query": ["SELECT " + "a_long_column_name, " * 20],
+        },
+        {
+            "calls": [8_379_427.0],
+            "total_time": [1_028_268_000 * NS_PER_MS],
+            "total_time / calls": [0.12 * NS_PER_MS],
+            "lock_time": [12_696.3 * NS_PER_MS],
+            "rows_examined": [8_379_427.0],
+            "rows_examined / calls": [1.0],
+        },
+    )
+
+    with (
+        patch("ddogctl.commands.dbm.get_datadog_client", return_value=mock_client),
+        patch("ddogctl.commands.dbm.console", Console(width=80)),
+    ):
+        result = runner.invoke(dbm, ["queries", "--engine", "mysql"])
+
+    assert result.exit_code == 0, result.output
+    for value in ("a448e2e9bcae4067", "8.38M", "285.6h", "0.12ms", "12.7s", "1.00"):
+        assert value in result.output, value
+    assert max(len(line) for line in result.output.splitlines()) <= 80
+
+
+def test_format_duration_and_count():
+    from ddogctl.commands.dbm import _count_text, _duration_text
+
+    assert _duration_text(None) == "-"
+    assert _duration_text(0.12) == "0.12ms"
+    assert _duration_text(999.994) == "999.99ms"
+    assert _duration_text(11_556.29) == "11.6s"
+    assert _duration_text(1_026_000) == "17.1m"
+    assert _duration_text(1_028_268_000) == "285.6h"
+    assert _count_text(429) == "429"
+    assert _count_text(9_999) == "9,999"
+    assert _count_text(65_090) == "65.1k"
+    assert _count_text(8_379_427) == "8.38M"
+    assert _count_text(2_500_000_000) == "2.50B"
 
 
 def test_queries_table_empty(mock_client, runner):
